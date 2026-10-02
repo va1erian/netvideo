@@ -26,6 +26,13 @@ services:
       # instead, first `mkdir -p /path/to/data && chown 10001:10001 /path/to/data`.
       - netvideo-data:/var/lib/netvideo
     read_only: true
+    # Bounds a hostile video that drives ffprobe into runaway allocation: the
+    # container is OOM-killed and restarted instead of starving the host.
+    mem_limit: 2g
+    # Headroom for the 32 concurrent streams the server allows (a file and a
+    # socket each) plus SQLite and probes; Docker's default soft limit is 1024.
+    ulimits:
+      nofile: { soft: 8192, hard: 8192 }
     tmpfs:
       - /tmp
     security_opt:

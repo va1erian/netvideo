@@ -275,11 +275,24 @@ impl Config {
                 "library.paths must contain at least one root".into(),
             ));
         }
+        let mut seen = std::collections::HashSet::new();
         for root in &self.library.paths {
             if root.as_os_str().is_empty() {
                 return Err(ServerError::Config(
                     "library.paths contains an empty entry".into(),
                 ));
+            }
+            if !root.is_absolute() {
+                return Err(ServerError::Config(format!(
+                    "library path {} must be absolute",
+                    root.display()
+                )));
+            }
+            if !seen.insert(crate::db::roots::root_identity(root)) {
+                return Err(ServerError::Config(format!(
+                    "library path {} is listed twice",
+                    root.display()
+                )));
             }
         }
         Ok(())

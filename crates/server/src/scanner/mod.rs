@@ -56,18 +56,17 @@ impl Scanner {
 
     /// Runs one full scan.
     pub async fn scan(&self, db: &Db) -> Result<ScanStats> {
-        let root_count = self.roots.len() as i64;
-        blocking({
-            let db = db.clone();
-            move || db.drop_roots_from(root_count)
-        })
-        .await?;
-
         let ffprobe_available = Arc::new(AtomicBool::new(true));
         let mut stats = ScanStats::default();
         for (index, root) in self.roots.iter().enumerate() {
-            self.scan_root(db, index as i64, root, &ffprobe_available, &mut stats)
-                .await?;
+            // One failing root must not stop the others from being scanned.
+            if let Err(error) = self
+                .scan_root(db, index as i64, root, &ffprobe_available, &mut stats)
+                .await
+            {
+                tracing::error!(root = %root.display(), %error, "library root scan failed");
+                stats.partial = true;
+            }
         }
         Ok(stats)
     }
@@ -90,7 +89,6 @@ impl Scanner {
             stats.partial = true;
             return Ok(());
         }
-        stats.partial |= walk.partial;
         stats.videos_found += walk.videos.len() as u64;
 
         let known = blocking({
@@ -98,6 +96,14 @@ impl Scanner {
             move || db.known_videos(root_index)
         })
         .await?;
+        // An unmounted share or a missing bind mount looks like an empty
+        // directory; pruning would wipe the root and lose every id.
+        let looks_unmounted = walk.dirs.is_empty() && walk.videos.is_empty() && !known.is_empty();
+        if looks_unmounted {
+            tracing::warn!(root = %root.display(), "library root is empty; keeping its rows");
+        }
+        let partial = walk.partial || looks_unmounted;
+        stats.partial |= partial;
         let pending: Vec<&FoundVideo> = walk
             .videos
             .iter()
@@ -111,18 +117,19 @@ impl Scanner {
         for video in pending {
             let metadata = probes.get(&video.rel_path).cloned();
             let known_video = known.get(&video.rel_path);
-            if metadata.is_none() && known_video.is_some_and(|k| is_unchanged(video, k)) {
-                // Still unprobed and unchanged: nothing new to store.
-                continue;
-            }
-            if metadata.is_none() && ffprobe_available.load(Ordering::Relaxed) {
+            let probe_failed = metadata.is_none() && ffprobe_available.load(Ordering::Relaxed);
+            if probe_failed {
                 stats.probe_failures += 1;
+            } else if metadata.is_none() && known_video.is_some_and(|k| is_unchanged(video, k)) {
+                // ffprobe is missing and the file is unchanged: nothing new.
+                continue;
             }
             upserts.push(VideoUpsert {
                 rel_path: video.rel_path.clone(),
                 size: video.size as i64,
                 mtime_ns: video.mtime_ns,
                 metadata,
+                probe_failed,
             });
         }
 
@@ -136,7 +143,7 @@ impl Scanner {
                 .map(|video| video.rel_path)
                 .collect(),
             upserts,
-            prune: !walk.partial,
+            prune: !partial,
         };
         let changes = blocking({
             let db = db.clone();
@@ -201,18 +208,22 @@ impl Scanner {
 }
 
 /// Whether a found video needs its row written or its metadata read.
+/// New or changed files need a write; unchanged ones only when they were
+/// never probed. A file ffprobe already failed on waits until it changes.
 fn needs_write(video: &FoundVideo, known: Option<&KnownVideo>) -> bool {
-    known.is_none_or(|known| !known.probed || !is_unchanged(video, known))
+    known.is_none_or(|known| !is_unchanged(video, known) || (!known.probed && !known.probe_failed))
 }
 
 fn is_unchanged(video: &FoundVideo, known: &KnownVideo) -> bool {
     known.size == video.size as i64 && known.mtime_ns == video.mtime_ns
 }
 
+/// The root folder's display name: its last component. Never the absolute
+/// path, which would reveal the server's layout to clients.
 fn root_name(root: &Path) -> String {
     root.file_name()
-        .and_then(|name| name.to_str())
-        .map_or_else(|| root.display().to_string(), str::to_owned)
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "library".to_owned())
 }
 
 async fn blocking<T: Send + 'static>(

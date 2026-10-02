@@ -96,8 +96,9 @@ pub fn walk_root(root: &Path) -> RootWalk {
     outcome
 }
 
+/// Dot-files and dot-directories, including names that are not UTF-8.
 fn is_hidden(name: &std::ffi::OsStr) -> bool {
-    name.to_str().is_some_and(|name| name.starts_with('.'))
+    name.as_encoded_bytes().first() == Some(&b'.')
 }
 
 fn relative_slash_path(root: &Path, path: &Path) -> Option<String> {

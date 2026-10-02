@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use ipnet::IpNet;
 
+use crate::api::stream_limit::StreamLimiter;
 use crate::auth::ServerKey;
 use crate::config::Config;
 use crate::db::Db;
@@ -29,6 +30,8 @@ pub struct AppState {
     pub trusted: Arc<Vec<IpNet>>,
     /// Library scan coordinator.
     pub scan: ScanCoordinator,
+    /// Concurrent file-stream limits.
+    pub streams: StreamLimiter,
     /// Server start time (Unix seconds).
     pub started_at: i64,
 }
@@ -40,6 +43,14 @@ impl AppState {
         let config = Arc::new(config);
         let roots = Arc::new(LibraryRoots::new(&config.library.paths));
         let trusted = Arc::new(config.trusted_proxy_nets()?);
+        // Before anything is served, so no id can resolve under the wrong root.
+        let dropped = db.reconcile_roots(&config.library.paths)?;
+        if dropped > 0 {
+            tracing::warn!(
+                dropped,
+                "library roots removed from the configuration; their rows were deleted"
+            );
+        }
         let scan = ScanCoordinator::new(Scanner::new(
             config.library.paths.clone(),
             config.library.ffprobe_path.clone(),
@@ -52,6 +63,7 @@ impl AppState {
             rate: Arc::new(RateLimiter::new()),
             trusted,
             scan,
+            streams: StreamLimiter::default(),
             started_at: unix_now(),
         })
     }

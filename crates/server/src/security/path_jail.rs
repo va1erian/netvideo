@@ -82,7 +82,7 @@ impl LibraryRoots {
     /// through the returned handle, never by reopening the path.
     pub fn open(&self, root_index: i64, relative_path: &str) -> Result<std::fs::File> {
         let resolved = self.resolve(root_index, relative_path)?;
-        let file = std::fs::File::open(&resolved)
+        let file = open_read(&resolved)
             .map_err(|error| ServerError::PathRejected(format!("file is unavailable: {error}")))?;
         let opened = opened_path(&file, &resolved)?;
         let canonical_root =
@@ -143,6 +143,23 @@ impl LibraryRoots {
         }
         Ok(path)
     }
+}
+
+/// Opens for reading without blocking: a FIFO swapped in after `resolve`
+/// would otherwise hang the thread in `open`. It is then refused as not a
+/// regular file. `O_NONBLOCK` has no effect on reads from regular files.
+#[cfg(unix)]
+fn open_read(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_read(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(path)
 }
 
 /// Where an open file actually lives, as the kernel sees it.

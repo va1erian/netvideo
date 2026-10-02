@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use rand::RngCore;
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 
 use crate::db::Db;
 use crate::db::models::ProbeInfo;
@@ -18,6 +18,8 @@ pub struct KnownVideo {
     pub mtime_ns: i64,
     /// Whether ffprobe metadata is stored.
     pub probed: bool,
+    /// Whether ffprobe failed on this exact size and mtime.
+    pub probe_failed: bool,
 }
 
 /// One video to insert or update.
@@ -27,10 +29,13 @@ pub struct VideoUpsert {
     pub rel_path: String,
     /// File size in bytes.
     pub size: i64,
-    /// Modification time (Unix seconds).
+    /// Modification time (nanoseconds since the Unix epoch).
     pub mtime_ns: i64,
     /// Probe result; `None` stores the video without metadata.
     pub metadata: Option<ProbeInfo>,
+    /// Whether ffprobe ran and failed; the file is not retried until it
+    /// changes.
+    pub probe_failed: bool,
 }
 
 /// Everything one scan learned about one root.
@@ -64,7 +69,7 @@ impl Db {
     pub fn known_videos(&self, root_index: i64) -> Result<HashMap<String, KnownVideo>> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare("SELECT rel_path, size, mtime_ns, probed FROM videos WHERE root_index = ?1")?;
+            .prepare("SELECT rel_path, size, mtime_ns, probed, probe_failed FROM videos WHERE root_index = ?1")?;
         let rows = stmt.query_map([root_index], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -72,6 +77,7 @@ impl Db {
                     size: row.get(1)?,
                     mtime_ns: row.get(2)?,
                     probed: row.get::<_, i64>(3)? != 0,
+                    probe_failed: row.get::<_, i64>(4)? != 0,
                 },
             ))
         })?;
@@ -81,9 +87,15 @@ impl Db {
     /// Applies one root's scan in a single transaction.
     pub fn apply_root(&self, update: &RootUpdate) -> Result<RootChanges> {
         let mut conn = self.conn()?;
-        let tx = conn.transaction()?;
+        // IMMEDIATE takes the write lock up front: a deferred transaction
+        // that reads first can fail with SQLITE_BUSY_SNAPSHOT in WAL mode.
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut folders = folder_ids(&tx, update.root_index)?;
         ensure_folder(&tx, update, "", &mut folders)?;
+        tx.execute(
+            "UPDATE folders SET name = ?2 WHERE root_index = ?1 AND rel_path = ''",
+            params![update.root_index, update.root_name],
+        )?;
         let mut dirs: Vec<&str> = update.dirs.iter().map(String::as_str).collect();
         // Parents sort before their children.
         dirs.sort_by_key(|rel| rel.matches('/').count());
@@ -104,15 +116,6 @@ impl Db {
         }
         tx.commit()?;
         Ok(changes)
-    }
-
-    /// Deletes every row of roots at or beyond `root_count` (removed from the
-    /// configuration).
-    pub fn drop_roots_from(&self, root_count: i64) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute("DELETE FROM videos WHERE root_index >= ?1", [root_count])?;
-        conn.execute("DELETE FROM folders WHERE root_index >= ?1", [root_count])?;
-        Ok(())
     }
 }
 
@@ -162,6 +165,7 @@ fn upsert_video(
         .optional()?;
     let meta = video.metadata.as_ref();
     let probed = meta.is_some() as i64;
+    let probe_failed = video.probe_failed as i64;
     let container = meta.and_then(|m| m.container.clone());
     let duration = meta.and_then(|m| m.duration_ms);
     let bitrate = meta.and_then(|m| m.bitrate);
@@ -169,7 +173,7 @@ fn upsert_video(
         Some(id) => {
             tx.execute(
                 "UPDATE videos SET folder_id = ?2, size = ?3, mtime_ns = ?4, probed = ?5,
-                 container = ?6, duration_ms = ?7, bitrate = ?8 WHERE id = ?1",
+                 container = ?6, duration_ms = ?7, bitrate = ?8, probe_failed = ?9 WHERE id = ?1",
                 params![
                     id,
                     folder_id,
@@ -178,7 +182,8 @@ fn upsert_video(
                     probed,
                     container,
                     duration,
-                    bitrate
+                    bitrate,
+                    probe_failed
                 ],
             )?;
             tx.execute("DELETE FROM streams WHERE video_id = ?1", [&id])?;
@@ -188,8 +193,8 @@ fn upsert_video(
             let id = new_id();
             tx.execute(
                 "INSERT INTO videos (id, folder_id, root_index, rel_path, name, size, mtime_ns,
-                 probed, container, duration_ms, bitrate)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                 probed, container, duration_ms, bitrate, probe_failed)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     id,
                     folder_id,
@@ -201,7 +206,8 @@ fn upsert_video(
                     probed,
                     container,
                     duration,
-                    bitrate
+                    bitrate,
+                    probe_failed
                 ],
             )?;
             id

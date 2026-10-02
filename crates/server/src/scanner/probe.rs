@@ -20,6 +20,11 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Largest accepted ffprobe output, in bytes.
 const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 
+/// Demuxers ffprobe may use: exactly the containers `formats::video_mime`
+/// accepts. Playlist and concat demuxers, which can reference other files,
+/// are excluded.
+const FORMAT_WHITELIST: &str = "matroska,mov,avi,mpegts,mpeg,mpegvideo,flv,ogg,asf";
+
 /// Longest stored codec/profile/language/title string, in characters.
 const MAX_TEXT_CHARS: usize = 200;
 
@@ -47,6 +52,8 @@ pub fn probe_args(path: &Path) -> Vec<std::ffi::OsString> {
         "-show_streams",
         "-protocol_whitelist",
         "file",
+        "-format_whitelist",
+        FORMAT_WHITELIST,
         "-i",
     ]
     .into_iter()
@@ -75,7 +82,14 @@ pub(crate) async fn run_capped(
         .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn()
-        .map_err(ProbeError::Unavailable)?;
+        .map_err(|error| match error.kind() {
+            // Only a missing or forbidden program means ffprobe is absent; a
+            // transient failure (EMFILE, EAGAIN) is one failed probe.
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied => {
+                ProbeError::Unavailable(error)
+            }
+            _ => ProbeError::Failed(error.to_string()),
+        })?;
     let stdout = child
         .stdout
         .take()

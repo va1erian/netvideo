@@ -167,3 +167,14 @@ fn hostnames_are_rejected_as_listen_hosts() {
     config.server.host = "::".into();
     config.validate().expect("IPv6 literal is valid");
 }
+
+#[test]
+fn library_paths_must_be_absolute_and_unique() {
+    let mut config = Config::from_toml(MINIMAL).expect("parse");
+    config.library.paths = vec!["media/videos".into()];
+    assert!(config.validate().is_err());
+    config.library.paths = vec!["/media/videos".into(), "/media/videos/".into()];
+    assert!(config.validate().is_err());
+    config.library.paths = vec!["/media/videos".into(), "/media/films".into()];
+    config.validate().expect("valid");
+}

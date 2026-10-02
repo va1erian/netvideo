@@ -2,6 +2,8 @@
 
 #![allow(dead_code)]
 
+pub mod library;
+
 use std::path::{Path, PathBuf};
 
 use axum::Router;

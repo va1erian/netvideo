@@ -78,6 +78,11 @@ fn input_is_a_file_url_after_the_protocol_whitelist() {
         .position(|arg| *arg == "-protocol_whitelist")
         .unwrap();
     assert_eq!(args[whitelist + 1], "file");
+    let formats = args
+        .iter()
+        .position(|arg| *arg == "-format_whitelist")
+        .unwrap();
+    assert!(!args[formats + 1].contains("hls") && !args[formats + 1].contains("concat"));
     assert_eq!(args[args.len() - 2], "-i");
     assert_eq!(args[args.len() - 1], "file:/media/-i http:evil.mkv");
 }

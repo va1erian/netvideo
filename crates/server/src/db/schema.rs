@@ -38,6 +38,11 @@ pub const MIGRATIONS: &[&str] = &[
     ",
     // v2: the library, mirroring the filesystem.
     r"
+    CREATE TABLE library_roots (
+        root_index  INTEGER PRIMARY KEY,
+        path        TEXT NOT NULL UNIQUE
+    );
+
     CREATE TABLE folders (
         id          TEXT PRIMARY KEY,
         root_index  INTEGER NOT NULL,
@@ -57,6 +62,7 @@ pub const MIGRATIONS: &[&str] = &[
         size        INTEGER NOT NULL,
         mtime_ns    INTEGER NOT NULL,
         probed      INTEGER NOT NULL DEFAULT 0,
+        probe_failed INTEGER NOT NULL DEFAULT 0,
         container   TEXT,
         duration_ms INTEGER,
         bitrate     INTEGER

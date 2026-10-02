@@ -7,63 +7,8 @@ use std::process::Command;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use common::{Harness, json};
-use netvideo_server::scanner::ScanStats;
-
-/// A scanner configured with a program that does not exist, so videos are
-/// indexed from the filesystem alone.
-fn unprobed() -> Harness {
-    Harness::with_ffprobe(Path::new("/nonexistent/ffprobe"))
-}
-
-fn write(harness: &Harness, rel: &str, bytes: &[u8]) {
-    let path = harness.library.join(rel);
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, bytes).unwrap();
-}
-
-async fn scan(harness: &Harness) -> ScanStats {
-    harness
-        .state
-        .scan
-        .scan_once(&harness.state.db)
-        .await
-        .unwrap()
-        .expect("no scan running")
-}
-
-async fn get(harness: &Harness, uri: &str, token: &str) -> (StatusCode, serde_json::Value) {
-    let (status, _, body) = harness.request(harness.authed("GET", uri, token)).await;
-    let value = if body.is_empty() {
-        serde_json::Value::Null
-    } else {
-        json(&body)
-    };
-    (status, value)
-}
-
-async fn root_id(harness: &Harness, token: &str) -> String {
-    let (status, roots) = get(harness, "/api/v1/roots", token).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(roots.as_array().unwrap().len(), 1);
-    assert_eq!(roots[0]["name"], "library");
-    roots[0]["id"].as_str().unwrap().to_string()
-}
-
-/// Finds the id of the video named `name` directly under the root.
-async fn video_id(harness: &Harness, token: &str, name: &str) -> String {
-    let root = root_id(harness, token).await;
-    let (_, page) = get(harness, &format!("/api/v1/folders/{root}"), token).await;
-    page["videos"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|video| video["name"] == name)
-        .expect("video listed")["id"]
-        .as_str()
-        .unwrap()
-        .to_string()
-}
+use common::Harness;
+use common::library::*;
 
 #[tokio::test]
 async fn scan_mirrors_the_filesystem() {
@@ -314,7 +259,8 @@ async fn only_admins_can_trigger_a_scan() {
 }
 
 /// Generates a real one-second clip with ffmpeg and checks ffprobe metadata.
-/// Skipped when ffmpeg or ffprobe is not installed.
+/// Skipped when ffmpeg or ffprobe is not installed, unless
+/// `NETVIDEO_REQUIRE_FFMPEG` is set.
 #[tokio::test]
 async fn real_ffprobe_metadata_is_stored() {
     let available = |tool: &str| {
@@ -324,6 +270,12 @@ async fn real_ffprobe_metadata_is_stored() {
             .is_ok_and(|o| o.status.success())
     };
     if !available("ffmpeg") || !available("ffprobe") {
+        // CI installs ffmpeg and sets this, so the test can never pass
+        // vacuously there.
+        assert!(
+            std::env::var_os("NETVIDEO_REQUIRE_FFMPEG").is_none(),
+            "NETVIDEO_REQUIRE_FFMPEG is set but ffmpeg/ffprobe are missing"
+        );
         eprintln!("skipping: ffmpeg/ffprobe not installed");
         return;
     }
@@ -387,18 +339,6 @@ async fn a_triggered_scan_holds_the_lock_until_it_runs() {
         .await
         .unwrap();
     assert!(raced.is_none(), "the triggered scan owns the lock");
-}
-
-/// Sets `rel`'s mtime to a whole second plus `millis`, so tests can make two
-/// changes that fall within the same Unix second.
-fn set_mtime(harness: &Harness, rel: &str, millis: u64) {
-    let time = std::time::UNIX_EPOCH + std::time::Duration::from_millis(1_700_000_000_000 + millis);
-    std::fs::File::options()
-        .write(true)
-        .open(harness.library.join(rel))
-        .unwrap()
-        .set_modified(time)
-        .unwrap();
 }
 
 #[tokio::test]

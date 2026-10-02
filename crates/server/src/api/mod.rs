@@ -4,6 +4,7 @@ pub mod auth_routes;
 pub mod error;
 pub mod library_routes;
 pub mod range;
+pub mod stream_limit;
 pub mod stream_routes;
 
 use axum::Json;

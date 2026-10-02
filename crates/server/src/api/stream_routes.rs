@@ -13,6 +13,7 @@ use tokio_util::io::ReaderStream;
 
 use crate::api::error::ApiError;
 use crate::api::range::{RangeError, parse_range};
+use crate::api::stream_limit::{SlotReader, StreamSlot};
 use crate::audit;
 use crate::auth::middleware::{AuthDevice, ClientIp};
 use crate::error::ServerError;
@@ -61,48 +62,81 @@ pub async fn file(
     // never matches a stale ETag.
     let mtime_ns = unix_mtime_ns(&metadata).unwrap_or(location.mtime_ns);
     let etag = format!("\"{len:x}-{mtime_ns:x}\"");
-    let file = tokio::fs::File::from_std(file);
-    serve_with_range(file, &headers, len, mime, &etag).await
-}
-
-/// Serves `file` honouring `Range` and `If-None-Match`.
-async fn serve_with_range(
-    file: tokio::fs::File,
-    headers: &HeaderMap,
-    len: u64,
-    mime: &str,
-    etag: &str,
-) -> Result<Response, ApiError> {
-    if headers.get(header::RANGE).is_none() && matches_etag(headers, etag) {
+    if if_none_match(&headers, &etag) {
         return Ok((
             StatusCode::NOT_MODIFIED,
-            [(header::ETAG, etag.to_string())],
+            [
+                (header::ETAG, etag),
+                (header::CACHE_CONTROL, CACHE_CONTROL.to_owned()),
+            ],
             Body::empty(),
         )
             .into_response());
     }
-    let requested = headers
-        .get(header::RANGE)
-        .map(|value| value.to_str().unwrap_or_default());
-    match requested {
-        None => serve(file, 0, len.saturating_sub(1), len, mime, etag, false).await,
-        Some(raw) => match parse_range(raw, len) {
-            Ok((start, end)) => serve(file, start, end, len, mime, etag, true).await,
-            Err(RangeError::Unsatisfiable) => Ok(unsatisfiable(len)),
-            Err(RangeError::Invalid) => Err(ApiError::bad_request("invalid range")),
-        },
+    let range = match usable_range(&headers, &etag, len) {
+        Ok(range) => range,
+        Err(()) => return Ok(unsatisfiable(len)),
+    };
+    let slot = state
+        .streams
+        .acquire(&device.id)
+        .ok_or_else(ApiError::too_many_requests)?;
+    let file = tokio::fs::File::from_std(file);
+    serve(file, slot, range, len, mime, &etag).await
+}
+
+/// Cache policy for video bytes: per user, never re-encoded by proxies.
+const CACHE_CONTROL: &str = "private, no-transform";
+
+/// The byte range to serve, `None` for the whole file, or `Err` when the
+/// requested range lies outside the file (416). Per RFC 9110 §14.2 a Range
+/// the server cannot use (unknown unit, several ranges, bad syntax) is
+/// ignored, as is one whose `If-Range` no longer matches the current ETag.
+fn usable_range(headers: &HeaderMap, etag: &str, len: u64) -> Result<Option<(u64, u64)>, ()> {
+    let Some(raw) = headers.get(header::RANGE).and_then(|v| v.to_str().ok()) else {
+        return Ok(None);
+    };
+    if let Some(if_range) = headers.get(header::IF_RANGE) {
+        // Only a strong ETag can validate a range; dates and weak tags fail.
+        if if_range.to_str().ok().map(str::trim) != Some(etag) {
+            return Ok(None);
+        }
+    }
+    match parse_range(raw, len) {
+        Ok(range) => Ok(Some(range)),
+        Err(RangeError::Unsatisfiable) => Err(()),
+        Err(RangeError::Invalid) => Ok(None),
     }
 }
 
+/// Whether `If-None-Match` matches the current ETag, using the weak
+/// comparison RFC 9110 §13.1.2 requires. `*` matches any existing file.
+fn if_none_match(headers: &HeaderMap, etag: &str) -> bool {
+    let Some(value) = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return false;
+    };
+    let opaque = |tag: &str| tag.trim().trim_start_matches("W/").to_owned();
+    let current = opaque(etag);
+    value.trim() == "*"
+        || value
+            .split(',')
+            .any(|candidate| opaque(candidate) == current)
+}
+
+/// Streams `range` (or the whole file) of `file`; `slot` is held until the
+/// body is dropped.
 async fn serve(
     mut file: tokio::fs::File,
-    start: u64,
-    end: u64,
+    slot: StreamSlot,
+    range: Option<(u64, u64)>,
     len: u64,
     mime: &str,
     etag: &str,
-    partial: bool,
 ) -> Result<Response, ApiError> {
+    let (start, end) = range.unwrap_or((0, len.saturating_sub(1)));
     let length = if len == 0 { 0 } else { end - start + 1 };
     let body = if length == 0 {
         Body::empty()
@@ -110,10 +144,10 @@ async fn serve(
         file.seek(SeekFrom::Start(start))
             .await
             .map_err(|_| ApiError::internal())?;
-        Body::from_stream(ReaderStream::new(file.take(length)))
+        Body::from_stream(ReaderStream::new(SlotReader::new(file.take(length), slot)))
     };
     let mut builder = Response::builder()
-        .status(if partial {
+        .status(if range.is_some() {
             StatusCode::PARTIAL_CONTENT
         } else {
             StatusCode::OK
@@ -122,8 +156,8 @@ async fn serve(
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::CONTENT_LENGTH, length.to_string())
         .header(header::ETAG, etag)
-        .header(header::CACHE_CONTROL, "private, no-transform");
-    if partial {
+        .header(header::CACHE_CONTROL, CACHE_CONTROL);
+    if range.is_some() {
         builder = builder.header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{len}"));
     }
     builder.body(body).map_err(|_| ApiError::internal())
@@ -136,11 +170,4 @@ fn unsatisfiable(len: u64) -> Response {
         Body::empty(),
     )
         .into_response()
-}
-
-fn matches_etag(headers: &HeaderMap, etag: &str) -> bool {
-    headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.split(',').any(|candidate| candidate.trim() == etag))
 }
