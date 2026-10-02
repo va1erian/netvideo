@@ -105,6 +105,9 @@ pub struct LibraryConfig {
     pub paths: Vec<PathBuf>,
     /// Seconds between background scans; `0` disables periodic scanning.
     pub scan_interval_secs: u64,
+    /// The `ffprobe` executable used to read video metadata. Videos are
+    /// still indexed (without metadata) when it is unavailable.
+    pub ffprobe_path: PathBuf,
 }
 
 impl Default for LibraryConfig {
@@ -112,6 +115,7 @@ impl Default for LibraryConfig {
         Self {
             paths: Vec::new(),
             scan_interval_secs: 3600,
+            ffprobe_path: PathBuf::from("ffprobe"),
         }
     }
 }
@@ -189,6 +193,9 @@ impl Config {
         if let Some(value) = get("NETVIDEO_SCAN_INTERVAL") {
             self.library.scan_interval_secs = parse_env(&value, "NETVIDEO_SCAN_INTERVAL")?;
         }
+        if let Some(value) = get("NETVIDEO_FFPROBE") {
+            self.library.ffprobe_path = PathBuf::from(value);
+        }
 
         Ok(())
     }
@@ -258,6 +265,11 @@ impl Config {
             )));
         }
 
+        if self.library.ffprobe_path.as_os_str().is_empty() {
+            return Err(ServerError::Config(
+                "library.ffprobe_path must not be empty".into(),
+            ));
+        }
         if self.library.paths.is_empty() {
             return Err(ServerError::Config(
                 "library.paths must contain at least one root".into(),

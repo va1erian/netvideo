@@ -2,7 +2,9 @@
 
 pub mod auth_routes;
 pub mod error;
+pub mod library_routes;
 pub mod range;
+pub mod stream_routes;
 
 use axum::Json;
 use axum::Router;
@@ -27,6 +29,11 @@ pub fn router(state: AppState) -> Router {
             post(auth_routes::create_pairing_code),
         )
         .route("/api/v1/devices/{id}", delete(auth_routes::revoke))
+        .route("/api/v1/roots", get(library_routes::roots))
+        .route("/api/v1/folders/{id}", get(library_routes::folder))
+        .route("/api/v1/videos/{id}", get(library_routes::video))
+        .route("/api/v1/videos/{id}/file", get(stream_routes::file))
+        .route("/api/v1/library/scan", post(library_routes::scan))
         .layer(TraceLayer::new_for_http())
         .layer(RequestBodyLimitLayer::new(max_body))
         .with_state(state)

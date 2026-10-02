@@ -1,150 +1,17 @@
 //! End-to-end API tests for pairing, refresh, revocation, device roles and
 //! request limits, all exercised through the real Axum router.
 
-use axum::Router;
-use axum::body::{Body, Bytes};
-use axum::http::{HeaderMap, Request, StatusCode, header};
-use http_body_util::BodyExt;
+mod common;
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use common::{Harness, json, json_request};
+use netvideo_server::auth;
 use netvideo_server::auth::paseto::{
     generate_device_keypair, issue_refresh_proof, public_key_paserk, token_fingerprint,
 };
-use netvideo_server::config::{Config, LibraryConfig, SecurityConfig, ServerConfig};
-use netvideo_server::state::AppState;
+use netvideo_server::config::SecurityConfig;
 use netvideo_server::util::unix_now;
-use netvideo_server::{api, auth};
-use pasetors::keys::AsymmetricSecretKey;
-use pasetors::version4::V4;
-use tempfile::TempDir;
-use tower::ServiceExt;
-
-struct Harness {
-    state: AppState,
-    app: Router,
-    _dir: TempDir,
-}
-
-/// A paired test device.
-struct Paired {
-    token: String,
-    device_id: String,
-    secret: AsymmetricSecretKey<V4>,
-}
-
-impl Harness {
-    fn new() -> Self {
-        Self::with_security(SecurityConfig::default())
-    }
-
-    fn with_security(security: SecurityConfig) -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("library");
-        std::fs::create_dir_all(&root).unwrap();
-        let config = Config {
-            server: ServerConfig {
-                host: "127.0.0.1".into(),
-                port: 0,
-                data_dir: dir.path().join("data"),
-                trusted_proxies: vec![],
-            },
-            security,
-            library: LibraryConfig {
-                paths: vec![root],
-                scan_interval_secs: 0,
-            },
-        };
-        let state = netvideo_server::build_state(config).unwrap();
-        Self {
-            app: api::router(state.clone()),
-            state,
-            _dir: dir,
-        }
-    }
-
-    async fn request(&self, request: Request<Body>) -> (StatusCode, HeaderMap, Bytes) {
-        let response = self.app.clone().oneshot(request).await.expect("request");
-        let status = response.status();
-        let headers = response.headers().clone();
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        (status, headers, body)
-    }
-
-    fn code(&self, grants_admin: bool) -> String {
-        auth::pairing::generate_pairing_code(
-            &self.state.db,
-            &self.state.keys,
-            600,
-            grants_admin,
-            unix_now(),
-        )
-        .unwrap()
-    }
-
-    /// Redeems `code` with a fresh device key and returns the device.
-    async fn redeem(&self, code: &str) -> Paired {
-        let (secret, public) = generate_device_keypair().unwrap();
-        let body = serde_json::json!({
-            "pairing_code": code,
-            "device_name": "test device",
-            "public_key": public_key_paserk(&public).unwrap(),
-        });
-        let (status, _, response) = self
-            .request(json_request("POST", "/api/v1/auth/pair", &body))
-            .await;
-        assert_eq!(status, StatusCode::OK, "pairing should succeed");
-        let value: serde_json::Value = serde_json::from_slice(&response).unwrap();
-        Paired {
-            token: value["auth_token"].as_str().unwrap().to_string(),
-            device_id: value["device_id"].as_str().unwrap().to_string(),
-            secret,
-        }
-    }
-
-    async fn pair_admin(&self) -> Paired {
-        self.redeem(&self.code(true)).await
-    }
-
-    async fn pair_viewer(&self) -> Paired {
-        self.redeem(&self.code(false)).await
-    }
-
-    fn authed(&self, method: &str, uri: &str, token: &str) -> Request<Body> {
-        Request::builder()
-            .method(method)
-            .uri(uri)
-            .header(header::AUTHORIZATION, format!("Bearer {token}"))
-            .body(Body::empty())
-            .unwrap()
-    }
-
-    fn authed_json(
-        &self,
-        method: &str,
-        uri: &str,
-        token: &str,
-        body: &serde_json::Value,
-    ) -> Request<Body> {
-        Request::builder()
-            .method(method)
-            .uri(uri)
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(header::AUTHORIZATION, format!("Bearer {token}"))
-            .body(Body::from(serde_json::to_vec(body).unwrap()))
-            .unwrap()
-    }
-}
-
-fn json_request(method: &str, uri: &str, body: &serde_json::Value) -> Request<Body> {
-    Request::builder()
-        .method(method)
-        .uri(uri)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(serde_json::to_vec(body).unwrap()))
-        .unwrap()
-}
-
-fn json(body: &[u8]) -> serde_json::Value {
-    serde_json::from_slice(body).unwrap()
-}
 
 #[tokio::test]
 async fn health_is_public() {

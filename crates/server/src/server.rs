@@ -35,6 +35,12 @@ pub async fn serve(
     let addr = listen_addr(&state.config)?;
     let app = api::router(state.clone());
 
+    state.scan.trigger(state.db.clone());
+    state.scan.start_periodic(
+        state.db.clone(),
+        Duration::from_secs(state.config.library.scan_interval_secs),
+    );
+
     if state.config.tls_enabled() {
         let tls = RustlsConfig::from_pem_file(
             state.config.security.tls_cert.trim(),

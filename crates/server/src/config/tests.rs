@@ -47,6 +47,7 @@ max_body_bytes = 4096
 [library]
 paths = ["/media/videos", "/media/films"]
 scan_interval_secs = 600
+ffprobe_path = "/usr/bin/ffprobe"
 "#;
     let config = Config::from_toml(text).expect("parse");
     config.validate().expect("valid");

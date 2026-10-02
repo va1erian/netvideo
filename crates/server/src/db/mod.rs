@@ -1,6 +1,8 @@
 //! SQLite-backed state: connection pool, migrations and typed queries.
 
+pub mod browse;
 pub mod devices;
+pub mod library;
 pub mod models;
 pub mod schema;
 

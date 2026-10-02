@@ -5,8 +5,9 @@
 #   docker build -f deploy/Dockerfile -t va1erian/netvideo-server .
 #
 # The bundled SQLite and the rustls provider are compiled from source, so the
-# builder image needs a C toolchain and CMake. ffmpeg (jellyfin-ffmpeg, for
-# Intel QSV) joins the runtime image with the transcoding milestone.
+# builder image needs a C toolchain and CMake. The runtime image carries
+# Debian's ffmpeg for ffprobe; jellyfin-ffmpeg (Intel QSV) replaces it with
+# the transcoding milestone.
 
 FROM rust:1-bookworm AS builder
 RUN apt-get update \
@@ -18,7 +19,7 @@ RUN cargo build --release --locked -p netvideo-server
 
 FROM debian:bookworm-slim
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --home /var/lib/netvideo netvideo \
     && mkdir -p /var/lib/netvideo /etc/netvideo /media/videos \

@@ -8,6 +8,7 @@ use crate::auth::ServerKey;
 use crate::config::Config;
 use crate::db::Db;
 use crate::error::Result;
+use crate::scanner::{ScanCoordinator, Scanner};
 use crate::security::{LibraryRoots, RateLimiter};
 use crate::util::unix_now;
 
@@ -26,6 +27,8 @@ pub struct AppState {
     pub rate: Arc<RateLimiter>,
     /// Trusted reverse-proxy networks.
     pub trusted: Arc<Vec<IpNet>>,
+    /// Library scan coordinator.
+    pub scan: ScanCoordinator,
     /// Server start time (Unix seconds).
     pub started_at: i64,
 }
@@ -37,6 +40,10 @@ impl AppState {
         let config = Arc::new(config);
         let roots = Arc::new(LibraryRoots::new(&config.library.paths));
         let trusted = Arc::new(config.trusted_proxy_nets()?);
+        let scan = ScanCoordinator::new(Scanner::new(
+            config.library.paths.clone(),
+            config.library.ffprobe_path.clone(),
+        ));
         Ok(Self {
             config,
             db,
@@ -44,6 +51,7 @@ impl AppState {
             roots,
             rate: Arc::new(RateLimiter::new()),
             trusted,
+            scan,
             started_at: unix_now(),
         })
     }
