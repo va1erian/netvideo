@@ -34,6 +34,7 @@ const GLOBAL_PAIR_FAILURE_KEY: &str = "pair-failures:global";
 
 /// Pairing request body.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PairRequest {
     /// The one-time code shown by the server CLI.
     pub pairing_code: String,
@@ -58,6 +59,7 @@ pub struct PairResponse {
 
 /// Refresh request body.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RefreshRequest {
     /// A device-signed PASETO bound to the presented access token.
     pub proof: String,
@@ -128,9 +130,12 @@ pub async fn pair(
 ) -> Result<Json<PairResponse>, ApiError> {
     let ip_text = ip.to_string();
     let window = Duration::from_secs(60);
+    // Every attempt is charged to the global budget before it runs and
+    // refunded only once it succeeds, so concurrent guesses cannot all slip
+    // past a budget that still looks open.
     if !state
         .rate
-        .has_capacity(GLOBAL_PAIR_FAILURE_KEY, GLOBAL_PAIR_FAILURE_LIMIT, window)
+        .check(GLOBAL_PAIR_FAILURE_KEY, GLOBAL_PAIR_FAILURE_LIMIT, window)
     {
         audit::rate_limited(&ip_text, "pair-global");
         return Err(ApiError::too_many_requests());
@@ -140,6 +145,7 @@ pub async fn pair(
         state.pairing_attempt_limit(),
         window,
     ) {
+        state.rate.refund(GLOBAL_PAIR_FAILURE_KEY);
         audit::rate_limited(&ip_text, "pair");
         return Err(ApiError::too_many_requests());
     }
@@ -163,6 +169,7 @@ pub async fn pair(
 
     match outcome {
         Ok(outcome) => {
+            state.rate.refund(GLOBAL_PAIR_FAILURE_KEY);
             audit::device_paired(&ip_text, &outcome.device.id, &outcome.device.name);
             Ok(Json(PairResponse {
                 device_id: outcome.device.id,
@@ -173,9 +180,6 @@ pub async fn pair(
         }
         Err(error) => {
             audit::pair_failed(&ip_text);
-            state
-                .rate
-                .check(GLOBAL_PAIR_FAILURE_KEY, GLOBAL_PAIR_FAILURE_LIMIT, window);
             Err(error.into())
         }
     }
@@ -195,9 +199,19 @@ pub async fn refresh(
     let fingerprint = token_fingerprint(token);
 
     let public = parse_device_public_key(&device.public_key)?;
-    if let Err(error) = verify_refresh_proof(&public, &request.proof, &fingerprint) {
-        audit::auth_failed(&ip_text, "invalid refresh proof");
-        return Err(error.into());
+    let proof = match verify_refresh_proof(&public, &request.proof, &fingerprint) {
+        Ok(proof) => proof,
+        Err(error) => {
+            audit::auth_failed(&ip_text, "invalid refresh proof");
+            return Err(error.into());
+        }
+    };
+    if !state
+        .proofs
+        .claim(&device.id, &proof.proof_id, proof.expires_at, unix_now())
+    {
+        audit::auth_failed(&ip_text, "replayed refresh proof");
+        return Err(ApiError::unauthorized("refresh proof already used"));
     }
 
     let issued = issue_access_token(&state.keys, &device.id, state.token_ttl())?;
@@ -227,7 +241,7 @@ pub async fn list_devices(
 pub async fn create_pairing_code(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    AdminDevice(_): AdminDevice,
+    AdminDevice(admin): AdminDevice,
     request: Option<Json<PairingCodeRequest>>,
 ) -> Result<Json<PairingCodeResponse>, ApiError> {
     let grants_admin = request.is_some_and(|Json(request)| request.admin);
@@ -249,6 +263,7 @@ pub async fn create_pairing_code(
     })
     .await
     .map_err(|_| ApiError::internal())??;
+    audit::pairing_code_created(&ip_text, Some(&admin.id), grants_admin);
     Ok(Json(PairingCodeResponse {
         pairing_code: code,
         expires_in_secs: ttl,
@@ -259,7 +274,7 @@ pub async fn create_pairing_code(
 pub async fn revoke(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    AdminDevice(_): AdminDevice,
+    AdminDevice(admin): AdminDevice,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     let db = state.db.clone();
@@ -270,6 +285,6 @@ pub async fn revoke(
     if !revoked {
         return Err(ApiError::not_found());
     }
-    audit::device_revoked(&ip.to_string(), &id);
+    audit::device_revoked(&ip.to_string(), Some(&admin.id), &id);
     Ok(StatusCode::NO_CONTENT)
 }

@@ -13,9 +13,13 @@ use axum::extract::State;
 use axum::routing::{delete, get, post};
 use serde_json::{Value, json};
 use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::timeout::RequestBodyTimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::state::AppState;
+
+/// Longest a client may take to send a request body.
+pub const REQUEST_BODY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Builds the complete application router.
 pub fn router(state: AppState) -> Router {
@@ -37,6 +41,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/library/scan", post(library_routes::scan))
         .layer(TraceLayer::new_for_http())
         .layer(RequestBodyLimitLayer::new(max_body))
+        // A client dripping a request body must not hold a connection open.
+        .layer(RequestBodyTimeoutLayer::new(REQUEST_BODY_TIMEOUT))
         .with_state(state)
 }
 

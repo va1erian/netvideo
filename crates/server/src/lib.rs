@@ -11,6 +11,7 @@ pub mod api;
 pub mod audit;
 pub mod auth;
 pub mod config;
+pub mod conn_deadline;
 pub mod db;
 pub mod error;
 pub mod scanner;

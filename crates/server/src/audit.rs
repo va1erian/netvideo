@@ -33,7 +33,9 @@ pub fn init(data_dir: &Path) -> std::io::Result<WorkerGuard> {
 
     // `RUST_LOG` only tunes the console: a global filter would also drop
     // audit events when an operator quiets the console.
+    // stderr, so CLI output on stdout (a pairing code) stays clean.
     let console = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
         .with_target(true)
         .compact()
         .with_filter(filter);
@@ -72,9 +74,28 @@ pub fn device_paired(client_ip: &str, device_id: &str, device_name: &str) {
     );
 }
 
-/// A device was revoked by an administrator.
-pub fn device_revoked(client_ip: &str, device_id: &str) {
-    tracing::warn!(target: AUDIT_TARGET, event = "device_revoked", client_ip, device_id);
+/// A pairing code was minted, from the CLI (`client_ip` is `"cli"`) or by
+/// an admin device.
+pub fn pairing_code_created(client_ip: &str, device_id: Option<&str>, admin: bool) {
+    tracing::info!(
+        target: AUDIT_TARGET,
+        event = "pairing_code_created",
+        client_ip,
+        device_id,
+        admin
+    );
+}
+
+/// A device was revoked, from the CLI (`by_device` is `None`) or by an
+/// admin device.
+pub fn device_revoked(client_ip: &str, by_device: Option<&str>, device_id: &str) {
+    tracing::warn!(
+        target: AUDIT_TARGET,
+        event = "device_revoked",
+        client_ip,
+        by_device,
+        device_id
+    );
 }
 
 /// A token was refreshed after a successful proof of possession.

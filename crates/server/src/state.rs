@@ -10,7 +10,7 @@ use crate::config::Config;
 use crate::db::Db;
 use crate::error::Result;
 use crate::scanner::{ScanCoordinator, Scanner};
-use crate::security::{LibraryRoots, RateLimiter};
+use crate::security::{LibraryRoots, ProofLog, RateLimiter};
 use crate::util::unix_now;
 
 /// Immutable + shared runtime state.
@@ -30,6 +30,8 @@ pub struct AppState {
     pub trusted: Arc<Vec<IpNet>>,
     /// Library scan coordinator.
     pub scan: ScanCoordinator,
+    /// Refresh proofs already used.
+    pub proofs: Arc<ProofLog>,
     /// Concurrent file-stream limits.
     pub streams: StreamLimiter,
     /// Server start time (Unix seconds).
@@ -63,6 +65,7 @@ impl AppState {
             rate: Arc::new(RateLimiter::new()),
             trusted,
             scan,
+            proofs: Arc::new(ProofLog::new()),
             streams: StreamLimiter::default(),
             started_at: unix_now(),
         })

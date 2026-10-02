@@ -158,6 +158,47 @@ async fn refresh_requires_a_valid_device_proof() {
 }
 
 #[tokio::test]
+async fn a_refresh_proof_cannot_be_replayed() {
+    let harness = Harness::new();
+    let device = harness.pair_viewer().await;
+    let proof = issue_refresh_proof(
+        &device.secret,
+        &token_fingerprint(&device.token),
+        std::time::Duration::from_secs(120),
+        std::time::Duration::from_secs(30),
+    )
+    .unwrap();
+    let body = serde_json::json!({ "proof": proof });
+    for expected in [StatusCode::OK, StatusCode::UNAUTHORIZED] {
+        let request = harness.authed_json("POST", "/api/v1/auth/refresh", &device.token, &body);
+        let (status, _, _) = harness.request(request).await;
+        assert_eq!(status, expected);
+    }
+}
+
+#[tokio::test]
+async fn auth_bodies_reject_unknown_fields() {
+    let harness = Harness::new();
+    let device = harness.pair_viewer().await;
+    let (_, public) = generate_device_keypair().unwrap();
+    let pair = serde_json::json!({
+        "pairing_code": harness.code(false),
+        "device_name": "extra",
+        "public_key": public_key_paserk(&public).unwrap(),
+        "admin": true,
+    });
+    let (status, _, _) = harness
+        .request(json_request("POST", "/api/v1/auth/pair", &pair))
+        .await;
+    assert!(status.is_client_error() && status != StatusCode::UNAUTHORIZED);
+
+    let refresh = serde_json::json!({ "proof": "x", "extra": 1 });
+    let request = harness.authed_json("POST", "/api/v1/auth/refresh", &device.token, &refresh);
+    let (status, _, _) = harness.request(request).await;
+    assert!(status.is_client_error() && status != StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn revoked_devices_are_locked_out() {
     let harness = Harness::new();
     let admin = harness.pair_admin().await;

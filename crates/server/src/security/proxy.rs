@@ -13,7 +13,12 @@ use ipnet::IpNet;
 
 /// Resolves the real client address from the peer address and an optional
 /// `X-Forwarded-For` header.
+///
+/// IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`, what a dual-stack listener
+/// reports for IPv4 peers) are treated as the IPv4 address they carry, so
+/// they match IPv4 trusted networks.
 pub fn client_ip(peer: IpAddr, trusted: &[IpNet], forwarded_for: Option<&str>) -> IpAddr {
+    let peer = peer.to_canonical();
     if !is_trusted(peer, trusted) {
         return peer;
     }
@@ -25,7 +30,7 @@ pub fn client_ip(peer: IpAddr, trusted: &[IpNet], forwarded_for: Option<&str>) -
         if candidate.is_empty() {
             continue;
         }
-        match candidate.parse::<IpAddr>() {
+        match candidate.parse::<IpAddr>().map(|ip| ip.to_canonical()) {
             Ok(ip) => {
                 if !is_trusted(ip, trusted) {
                     return ip;
@@ -114,6 +119,15 @@ mod tests {
         let trusted = nets(&["10.0.0.0/8"]);
         let resolved = client_ip(ip("10.0.0.5"), &trusted, Some("not-an-ip"));
         assert_eq!(resolved, ip("10.0.0.5"));
+    }
+
+    #[test]
+    fn ipv4_mapped_peers_match_ipv4_networks() {
+        let trusted = nets(&["172.16.0.0/12"]);
+        let resolved = client_ip(ip("::ffff:172.18.0.2"), &trusted, Some("203.0.113.7"));
+        assert_eq!(resolved, ip("203.0.113.7"));
+        let untrusted = client_ip(ip("::ffff:198.51.100.1"), &trusted, Some("1.2.3.4"));
+        assert_eq!(untrusted, ip("198.51.100.1"));
     }
 
     #[test]

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use netvideo_server::{Config, server};
+use netvideo_server::{Config, audit, server};
 
 #[derive(Debug, Parser)]
 #[command(name = "netvideo-server", version, about)]
@@ -57,9 +57,11 @@ fn main() -> Result<()> {
                 .context("running server")?;
         }
         Command::Pair { ttl, viewer } => {
+            let _audit = audit::init(&config.server.data_dir).context("opening audit log")?;
             let ttl = ttl.min(netvideo_server::config::MAX_PAIRING_CODE_TTL_SECS);
             let code =
                 server::print_pairing_code(&config, ttl, !viewer).context("generating code")?;
+            audit::pairing_code_created("cli", None, !viewer);
             println!("{code}");
             let role = if viewer { "viewer" } else { "admin" };
             println!("Pairing code ({role}) valid for {ttl}s; enter it in the netvideo client.");
@@ -83,7 +85,9 @@ fn main() -> Result<()> {
             }
         }
         Command::Revoke { device_id } => {
+            let _audit = audit::init(&config.server.data_dir).context("opening audit log")?;
             if server::revoke_device(&config, &device_id).context("revoking device")? {
+                audit::device_revoked("cli", None, &device_id);
                 println!("revoked {device_id}");
             } else {
                 eprintln!("no such device: {device_id}");

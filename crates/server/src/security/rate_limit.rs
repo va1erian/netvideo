@@ -34,11 +34,14 @@ impl RateLimiter {
         self.check_at(key, limit, window, Instant::now())
     }
 
-    /// Returns `true` if `key` still has room under `limit` per `window`,
-    /// without recording an attempt. Pair with [`RateLimiter::check`] to count
-    /// only some outcomes (for example failures).
-    pub fn has_capacity(&self, key: &str, limit: u32, window: Duration) -> bool {
-        self.has_capacity_at(key, limit, window, Instant::now())
+    /// Gives back the most recent attempt recorded for `key`, for attempts
+    /// charged up front that turned out not to count (for example a
+    /// successful pairing against a failure budget).
+    pub fn refund(&self, key: &str) {
+        let mut map = self.lock();
+        if let Some(entries) = map.get_mut(key) {
+            entries.pop_back();
+        }
     }
 
     /// Clock-injectable variant used by tests.
@@ -59,18 +62,6 @@ impl RateLimiter {
         }
         entries.push_back(now);
         true
-    }
-
-    /// Clock-injectable variant of [`RateLimiter::has_capacity`].
-    pub fn has_capacity_at(&self, key: &str, limit: u32, window: Duration, now: Instant) -> bool {
-        let mut map = self.lock();
-        match map.get_mut(key) {
-            Some(entries) => {
-                expire(entries, now, window);
-                (entries.len() as u32) < limit
-            }
-            None => limit > 0,
-        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, VecDeque<Instant>>> {
@@ -170,14 +161,15 @@ mod tests {
     }
 
     #[test]
-    fn has_capacity_does_not_record() {
+    fn refund_returns_one_attempt() {
         let limiter = RateLimiter::new();
         let now = Instant::now();
         let window = Duration::from_secs(60);
-        assert!(limiter.has_capacity_at("k", 1, window, now));
-        assert!(limiter.has_capacity_at("k", 1, window, now));
         assert!(limiter.check_at("k", 1, window, now));
-        assert!(!limiter.has_capacity_at("k", 1, window, now));
+        limiter.refund("k");
+        assert!(limiter.check_at("k", 1, window, now));
+        assert!(!limiter.check_at("k", 1, window, now));
+        limiter.refund("missing");
     }
 
     #[test]

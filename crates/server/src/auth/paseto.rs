@@ -23,6 +23,10 @@ use crate::error::{Result, ServerError};
 /// Custom claim carrying the SHA-256 of the token being refreshed.
 pub const REFRESH_FOR_CLAIM: &str = "refresh_for";
 
+/// Longest a refresh proof may stay valid, counted from when the server
+/// checks it. Bounds how long a captured proof matters at all.
+pub const MAX_REFRESH_PROOF_LIFETIME: Duration = Duration::from_secs(600);
+
 /// Access-token scope claim value.
 pub const SCOPE_LIBRARY: &str = "library:read stream:read";
 
@@ -119,13 +123,22 @@ pub fn issue_refresh_proof(
         .map_err(|error| ServerError::Token(error.to_string()))
 }
 
-/// Verifies a device's refresh proof and that it is bound to the presented
-/// token.
+/// Identity of a verified refresh proof, for replay tracking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedProof {
+    /// Unique proof identifier (`jti`).
+    pub proof_id: String,
+    /// Expiry as a Unix timestamp in seconds.
+    pub expires_at: i64,
+}
+
+/// Verifies a device's refresh proof, that it is bound to the presented
+/// token, and that it expires within [`MAX_REFRESH_PROOF_LIFETIME`].
 pub fn verify_refresh_proof(
     device_public: &AsymmetricPublicKey<V4>,
     proof: &str,
     expected_fingerprint: &str,
-) -> Result<()> {
+) -> Result<VerifiedProof> {
     let untrusted = UntrustedToken::<Public, V4>::try_from(proof)
         .map_err(|_| ServerError::Unauthorized("malformed refresh proof".into()))?;
     let rules = ClaimsValidationRules::new();
@@ -140,7 +153,17 @@ pub fn verify_refresh_proof(
             "refresh proof is not bound to this token".into(),
         ));
     }
-    Ok(())
+    let expires_at = unix_claim(claims, "exp")?;
+    if expires_at > unix_now() + MAX_REFRESH_PROOF_LIFETIME.as_secs() as i64 {
+        return Err(ServerError::Unauthorized(
+            "refresh proof lives too long".into(),
+        ));
+    }
+    let proof_id = string_claim(claims, "jti")?;
+    Ok(VerifiedProof {
+        proof_id,
+        expires_at,
+    })
 }
 
 /// Builds the fingerprint a refresh proof must be bound to.

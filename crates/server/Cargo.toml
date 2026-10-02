@@ -21,6 +21,7 @@ clap = { version = "4", features = ["derive"] }
 dirs = "5"
 hex = "0.4"
 hmac = "0.12"
+hyper-util = { version = "0.1", features = ["tokio"] }
 ipnet = "2"
 pasetors = "0.8"
 r2d2 = "0.8"
@@ -46,7 +47,7 @@ tokio = { version = "1", features = [
 ] }
 tokio-util = { version = "0.7", features = ["io"] }
 toml = "1"
-tower-http = { version = "0.6", features = ["trace", "limit"] }
+tower-http = { version = "0.6", features = ["trace", "limit", "timeout"] }
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
@@ -57,6 +58,7 @@ walkdir = "2"
 libc = "0.2"
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 http-body-util = "0.1"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }

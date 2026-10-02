@@ -52,7 +52,9 @@ Out of scope:
   - per client IP, `max_pairing_attempts_per_min` attempts (default 3,
     successes included), with IPv6 clients grouped by /64;
   - globally, at 30 failed attempts per minute across all clients, which
-    bounds a distributed guess against the 10⁶ code space. The trade-off is
+    bounds a distributed guess against the 10⁶ code space. Each attempt is
+    charged before it runs and refunded only if it succeeds, so concurrent
+    guesses cannot overrun the budget. The trade-off is
     that a guesser can block pairing for everyone for a minute at a time;
     already paired devices are unaffected;
   - while the limiter's table is full (4096 tracked clients), new client
@@ -72,6 +74,9 @@ Out of scope:
 - To refresh a token, the client must send a proof signed by its device key
   that names the current token's fingerprint. A stolen token can be used
   until it expires but cannot be extended.
+- A proof may live at most 10 minutes, and each one is accepted once: the
+  server remembers used proof ids until they expire. A refresh does not
+  revoke the old token, which stays valid until its own expiry.
 - Every authenticated request checks that the device still exists and is not
   revoked, so revocation takes effect immediately.
 - **Roles.**
@@ -91,16 +96,28 @@ Out of scope:
 - `X-Forwarded-For` is honoured only when the direct peer is inside
   `trusted_proxies`. Otherwise the peer address is the
   client address, so a client cannot spoof its IP to escape rate limits.
+  IPv4 peers that a dual-stack listener reports as `::ffff:a.b.c.d` are
+  matched as IPv4.
+- The example compose file trusts `172.16.0.0/12`. Docker isolates bridge
+  networks from each other, so only containers on netvideo's own network
+  can use that trust; keep that network to netvideo and Cosmos, or narrow
+  the range to its subnet.
 - TLS is terminated by Cosmos, or by the server itself when
   `tls_cert`/`tls_key` are set. Configuring only one of the two is rejected
   at startup.
 - **Stream limits.** A device may hold at most 4 file streams at once, and
-  the server at most 32 in total. Extra requests get 429. Each stream holds a
+  the server at most 32 in total. Extra requests get 429 before any file is
+  opened, and are audited. Each stream holds a
   file and a socket, and a client that stops reading holds both, so without
   these limits one device or stolen token could exhaust the server's file
   descriptors. The compose file also raises `nofile` to 8192.
+- **Timeouts.** A connection must send its first byte, and each request
+  its headers, within 30 s; that also closes idle keep-alive connections.
+  A request body must arrive within 30 s. The server speaks HTTP/1.1 only,
+  because detecting HTTP/2 would mean waiting on a silent connection.
 - Request bodies are capped at `max_body_bytes` (default 64 KiB, at most
-  1 MiB). Folder listings reject unknown query parameters.
+  1 MiB). JSON bodies and folder-listing queries reject unknown fields.
+  Endpoints that take no query parameters ignore the query string.
 - **(planned, M2)** The Android client will refuse cleartext traffic, except
   in explicit LAN debug builds.
 - **No secrets in URLs.** Tokens travel only in the `Authorization` header.
@@ -176,36 +193,18 @@ Clients only ever name database ids. They never name paths.
 
 ## Residual risks
 
-Known gaps, with the most serious first. The first is planned for M3; the
-others are being fixed in the next server PR, which updates this list.
+Most serious first. The first is planned for M3; the rest are accepted, or
+need write access to the media, which only the owner's other machines have.
 
 - **ffprobe runs as the server's user.** It can read the data directory,
   including `server.key`. A parser exploit in ffprobe, triggered by a
   hostile media file, could steal the signing key and mint tokens for any
   device. M3 runs ffprobe and ffmpeg sandboxed away from the data
   directory.
-- **The global pairing budget is soft.** It is checked when a request
-  arrives but only charged when the attempt fails, so a concurrent burst
-  from many addresses can make more than 30 guesses in a minute.
-- **Refresh proofs are replayable.** The server does not cap a proof's
-  lifetime or remember used proofs, so a captured token and proof pair can
-  be refreshed again while both are valid. A refresh does not revoke the
-  old token either.
-- **IPv4 clients on a dual-stack listener.** With `host = "::"`, IPv4 peers
-  arrive as `::ffff:a.b.c.d` and do not match IPv4 entries in
-  `trusted_proxies`.
-- **The example compose file trusts `172.16.0.0/12`**, every default Docker
-  bridge. Any container on the host could then set `X-Forwarded-For`.
-  Narrow it to the Cosmos network's subnet.
-- **No connection timeouts.** There is no request, header or idle timeout,
-  so slow clients and idle keep-alive connections are bounded only by file
-  descriptors. Stream limits bound open streams, not connections.
-- **Pairing and refresh bodies accept unknown fields**, and endpoints
-  without query parameters ignore any query string.
-
-Accepted, or needing write access to the media, which only the owner's
-other machines have:
-
+- **No idle timeout on a stream.** A client that stops reading keeps its
+  stream open; the stream limits bound how many it can hold.
+- The proof log lives in memory, so a restart forgets it. A proof captured
+  before a restart can be replayed once within its 10 minutes.
 - ffprobe opens the walked path directly. A directory swapped for a symlink
   between the walk and the probe could let ffprobe read metadata from
   outside the root. Serving is not affected, because it re-checks the
@@ -227,10 +226,10 @@ other machines have:
 - `<data_dir>/audit.log.<date>` (one file per day) records JSON lines for:
   - pairing successes and failures;
   - token refreshes;
-  - revocations through the API (the CLI `pair`, `revoke` and `devices`
-    commands are not audited yet);
+  - pairing codes minted and devices revoked, from the CLI (`client_ip` is
+    `cli`) or by an admin device, which is named;
   - authentication failures, including a viewer refused an admin action;
-  - pairing rate-limit hits (stream-limit refusals are not logged);
+  - rate-limit hits, for pairing and for streams;
   - path escapes;
   - finished scans.
 - `RUST_LOG` filters only the console output. The audit log always records
