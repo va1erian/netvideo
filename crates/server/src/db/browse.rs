@@ -4,7 +4,8 @@ use rusqlite::{OptionalExtension, params};
 
 use crate::db::Db;
 use crate::db::models::{
-    FolderPage, FolderRef, StreamInfo, StreamKind, VideoDetail, VideoLocation, VideoSummary,
+    FolderPage, FolderRef, Progress, StreamInfo, StreamKind, VideoDetail, VideoLocation,
+    VideoSummary,
 };
 use crate::error::Result;
 use crate::scanner::formats::video_mime;
@@ -24,7 +25,13 @@ impl Db {
 
     /// One page of a folder: subfolders, then videos, each sorted by name.
     /// `offset` counts entries across both lists. `None` for an unknown id.
-    pub fn folder_page(&self, id: &str, offset: u64, limit: u64) -> Result<Option<FolderPage>> {
+    pub fn folder_page(
+        &self,
+        id: &str,
+        device_id: &str,
+        offset: u64,
+        limit: u64,
+    ) -> Result<Option<FolderPage>> {
         let conn = self.conn()?;
         let Some(folder) = conn
             .query_row(
@@ -62,14 +69,17 @@ impl Db {
         let mut videos = Vec::new();
         if remaining > 0 && video_offset < video_count {
             let mut stmt = conn.prepare(
-                "SELECT v.id, v.name, v.size, v.duration_ms, s.codec, s.width, s.height
+                "SELECT v.id, v.name, v.size, v.duration_ms, s.codec, s.width, s.height,
+                 p.position_ms, p.watched, p.updated_at
                  FROM videos v
                  LEFT JOIN streams s ON s.video_id = v.id AND s.idx = (
                      SELECT MIN(idx) FROM streams WHERE video_id = v.id AND kind = 'video')
+                 LEFT JOIN progress p ON p.video_id = v.id AND p.device_id = ?4
                  WHERE v.folder_id = ?1
                  ORDER BY v.name COLLATE NOCASE, v.name LIMIT ?2 OFFSET ?3",
             )?;
-            let rows = stmt.query_map(params![id, remaining, video_offset], |row| {
+            let args = params![id, remaining, video_offset, device_id];
+            let rows = stmt.query_map(args, |row| {
                 Ok(VideoSummary {
                     id: row.get(0)?,
                     name: row.get(1)?,
@@ -78,6 +88,7 @@ impl Db {
                     video_codec: row.get(4)?,
                     width: row.get(5)?,
                     height: row.get(6)?,
+                    progress: progress_at(row, 7)?,
                 })
             })?;
             videos = rows.collect::<rusqlite::Result<_>>()?;
@@ -94,14 +105,18 @@ impl Db {
         }))
     }
 
-    /// Full details of a video, or `None` for an unknown id.
-    pub fn video_detail(&self, id: &str) -> Result<Option<VideoDetail>> {
+    /// Full details of a video, with `device_id`'s progress, or `None` for an
+    /// unknown id.
+    pub fn video_detail(&self, id: &str, device_id: &str) -> Result<Option<VideoDetail>> {
         let conn = self.conn()?;
         let detail = conn
             .query_row(
-                "SELECT id, name, folder_id, size, mtime_ns, probed, container, duration_ms, bitrate
-                 FROM videos WHERE id = ?1",
-                [id],
+                "SELECT v.id, v.name, v.folder_id, v.size, v.mtime_ns, v.probed, v.container,
+                 v.duration_ms, v.bitrate, p.position_ms, p.watched, p.updated_at
+                 FROM videos v
+                 LEFT JOIN progress p ON p.video_id = v.id AND p.device_id = ?2
+                 WHERE v.id = ?1",
+                [id, device_id],
                 |row| {
                     let name: String = row.get(1)?;
                     Ok(VideoDetail {
@@ -118,6 +133,7 @@ impl Db {
                         duration_ms: row.get(7)?,
                         bitrate: row.get(8)?,
                         streams: Vec::new(),
+                        progress: progress_at(row, 9)?,
                     })
                 },
             )
@@ -205,4 +221,17 @@ fn ancestors(conn: &rusqlite::Connection, id: &str) -> Result<Vec<FolderRef>> {
     }
     path.reverse();
     Ok(path)
+}
+
+/// Reads the `position_ms, watched, updated_at` columns starting at `first`,
+/// which are all NULL when the device has no progress.
+fn progress_at(row: &rusqlite::Row<'_>, first: usize) -> rusqlite::Result<Option<Progress>> {
+    let Some(position_ms) = row.get::<_, Option<i64>>(first)? else {
+        return Ok(None);
+    };
+    Ok(Some(Progress {
+        position_ms,
+        watched: row.get::<_, i64>(first + 1)? != 0,
+        updated_at: row.get(first + 2)?,
+    }))
 }

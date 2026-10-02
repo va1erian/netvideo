@@ -10,6 +10,7 @@ use crate::api::error::ApiError;
 use crate::auth::middleware::{AdminDevice, AuthDevice};
 use crate::db::models::{FolderPage, FolderRef, VideoDetail};
 use crate::state::AppState;
+use crate::util::unix_now;
 
 /// Default number of entries per folder page.
 const DEFAULT_PAGE: u64 = 200;
@@ -42,7 +43,7 @@ pub async fn roots(
 /// `GET /api/v1/folders/{id}?cursor=&limit=`
 pub async fn folder(
     State(state): State<AppState>,
-    AuthDevice(_): AuthDevice,
+    AuthDevice(device): AuthDevice,
     Path(id): Path<String>,
     query: Result<Query<PageQuery>, QueryRejection>,
 ) -> Result<Json<FolderPage>, ApiError> {
@@ -58,7 +59,7 @@ pub async fn folder(
         return Err(ApiError::bad_request("limit must be between 1 and 1000"));
     }
     let db = state.db.clone();
-    let page = tokio::task::spawn_blocking(move || db.folder_page(&id, offset, limit))
+    let page = tokio::task::spawn_blocking(move || db.folder_page(&id, &device.id, offset, limit))
         .await
         .map_err(|_| ApiError::internal())??;
     page.map(Json).ok_or_else(ApiError::not_found)
@@ -67,14 +68,58 @@ pub async fn folder(
 /// `GET /api/v1/videos/{id}`
 pub async fn video(
     State(state): State<AppState>,
-    AuthDevice(_): AuthDevice,
+    AuthDevice(device): AuthDevice,
     Path(id): Path<String>,
 ) -> Result<Json<VideoDetail>, ApiError> {
     let db = state.db.clone();
-    let detail = tokio::task::spawn_blocking(move || db.video_detail(&id))
+    let detail = tokio::task::spawn_blocking(move || db.video_detail(&id, &device.id))
         .await
         .map_err(|_| ApiError::internal())??;
     detail.map(Json).ok_or_else(ApiError::not_found)
+}
+
+/// Longest resume position accepted (one week), to keep junk out of the
+/// database.
+const MAX_POSITION_MS: i64 = 7 * 24 * 3600 * 1000;
+
+/// Body of a progress update.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProgressRequest {
+    /// Resume position in milliseconds.
+    pub position_ms: i64,
+    /// Whether the video counts as watched.
+    #[serde(default)]
+    pub watched: bool,
+}
+
+/// `PUT /api/v1/videos/{id}/progress`: saves this device's position.
+pub async fn save_progress(
+    State(state): State<AppState>,
+    AuthDevice(device): AuthDevice,
+    Path(id): Path<String>,
+    Json(request): Json<ProgressRequest>,
+) -> Result<StatusCode, ApiError> {
+    if !(0..=MAX_POSITION_MS).contains(&request.position_ms) {
+        return Err(ApiError::bad_request("position_ms is out of range"));
+    }
+    let db = state.db.clone();
+    let saved = tokio::task::spawn_blocking(move || {
+        db.save_progress(
+            &device.id,
+            &id,
+            request.position_ms,
+            request.watched,
+            unix_now(),
+        )
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    if saved {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::not_found())
+    }
 }
 
 /// `POST /api/v1/library/scan` (admin only): starts a background scan.

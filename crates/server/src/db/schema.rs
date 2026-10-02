@@ -5,7 +5,7 @@
 //! must never be edited — add a new one instead.
 
 /// The schema version this build expects.
-pub const CURRENT_VERSION: i64 = 2;
+pub const CURRENT_VERSION: i64 = MIGRATIONS.len() as i64;
 
 /// Ordered migration statements.
 pub const MIGRATIONS: &[&str] = &[
@@ -86,6 +86,18 @@ pub const MIGRATIONS: &[&str] = &[
         is_forced   INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (video_id, idx)
     );
+    ",
+    // v3: playback progress, per device.
+    r"
+    CREATE TABLE progress (
+        device_id   TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+        video_id    TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        position_ms INTEGER NOT NULL,
+        watched     INTEGER NOT NULL DEFAULT 0,
+        updated_at  INTEGER NOT NULL,
+        PRIMARY KEY (device_id, video_id)
+    );
+    CREATE INDEX idx_progress_video ON progress(video_id);
     ",
 ];
 
