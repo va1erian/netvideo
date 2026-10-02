@@ -1,0 +1,5 @@
+# Kotlin bindings target Android (minSdk 26): use the JNA cleaner, not
+# java.lang.ref.Cleaner (API 33), and Android-friendly codegen.
+[bindings.kotlin]
+android = true
+android_cleaner = true
