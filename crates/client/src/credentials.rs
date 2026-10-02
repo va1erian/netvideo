@@ -27,6 +27,9 @@ pub struct Credentials {
     pub token: String,
     /// Token expiry (Unix seconds).
     pub expires_at: i64,
+    /// The token's lifetime when it was issued, in seconds (0 if unknown).
+    #[serde(default)]
+    pub lifetime_secs: i64,
 }
 
 impl std::fmt::Debug for Credentials {
@@ -89,21 +92,29 @@ impl FileStore {
         Self { dir }
     }
 
-    /// The directory holding the credential files.
-    pub fn dir(&self) -> &Path {
-        &self.dir
-    }
-
-    /// The file for a server id.
-    pub fn path(&self, server_id: &str) -> PathBuf {
-        self.dir.join(format!("{server_id}.json"))
+    /// The file for a server id. Ids are [`ServerEndpoint`] ids (lowercase
+    /// hex); anything else is refused so it cannot name another path.
+    ///
+    /// [`ServerEndpoint`]: crate::ServerEndpoint
+    pub fn path(&self, server_id: &str) -> Result<PathBuf> {
+        let valid = !server_id.is_empty()
+            && server_id.len() <= 64
+            && server_id
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        if !valid {
+            return Err(ClientError::Store(format!(
+                "invalid server id {server_id:?}"
+            )));
+        }
+        Ok(self.dir.join(format!("{server_id}.json")))
     }
 }
 
 impl CredentialStore for FileStore {
     /// Loads credentials, or `None` when the server is not paired.
     fn load(&self, server_id: &str) -> Result<Option<Credentials>> {
-        let path = self.path(server_id);
+        let path = self.path(server_id)?;
         match std::fs::read_to_string(&path) {
             Ok(text) => serde_json::from_str(&text).map(Some).map_err(|error| {
                 ClientError::Store(format!("cannot parse {}: {error}", path.display()))
@@ -115,8 +126,8 @@ impl CredentialStore for FileStore {
 
     /// Writes credentials atomically with owner-only permissions.
     fn save(&self, server_id: &str, credentials: &Credentials) -> Result<()> {
-        std::fs::create_dir_all(&self.dir)?;
-        let path = self.path(server_id);
+        create_private_dir(&self.dir)?;
+        let path = self.path(server_id)?;
         let temporary = unique_temp(&path);
         let encoded = serde_json::to_vec_pretty(credentials)
             .map_err(|error| ClientError::Store(error.to_string()))?;
@@ -124,21 +135,35 @@ impl CredentialStore for FileStore {
             let _ = std::fs::remove_file(&temporary);
             return Err(error);
         }
-        if path.exists() {
-            std::fs::remove_file(&path)?;
+        // `rename` replaces the old file atomically on Unix and Windows.
+        if let Err(error) = std::fs::rename(&temporary, &path) {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error.into());
         }
-        std::fs::rename(&temporary, &path)?;
         Ok(())
     }
 
     /// Removes stored credentials. Missing files are not an error.
     fn remove(&self, server_id: &str) -> Result<()> {
-        match std::fs::remove_file(self.path(server_id)) {
+        match std::fs::remove_file(self.path(server_id)?) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error.into()),
         }
     }
+}
+
+/// Creates `dir` (owner-only on Unix, so file names are private too).
+fn create_private_dir(dir: &Path) -> Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir)?;
+    Ok(())
 }
 
 /// A unique sibling path for an in-progress credential write.
@@ -181,25 +206,35 @@ mod tests {
             secret: "k4.secret.abc".into(),
             token: "v4.public.xyz".into(),
             expires_at: 2_000,
+            lifetime_secs: 1_000,
         }
     }
 
     #[test]
     fn save_load_and_remove_round_trip() {
-        let dir = std::env::temp_dir().join(format!(
-            "netvideo-client-creds-{}-{}",
-            std::process::id(),
-            crate::util::unix_now()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        let store = FileStore::with_dir(dir.clone());
-        assert!(store.load("srv").unwrap().is_none());
-        store.save("srv", &sample()).unwrap();
-        assert_eq!(store.load("srv").unwrap().unwrap(), sample());
-        store.remove("srv").unwrap();
-        assert!(store.load("srv").unwrap().is_none());
-        store.remove("srv").unwrap();
-        std::fs::remove_dir_all(&dir).ok();
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileStore::with_dir(dir.path().join("servers"));
+        assert!(store.load("ab12").unwrap().is_none());
+        store.save("ab12", &sample()).unwrap();
+        let mut updated = sample();
+        updated.token = "v4.public.new".into();
+        store.save("ab12", &updated).unwrap();
+        assert_eq!(store.load("ab12").unwrap().unwrap(), updated);
+        let names: Vec<_> = std::fs::read_dir(dir.path().join("servers"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["ab12.json"], "no temporary file left behind");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&store.path("ab12").unwrap()), 0o600);
+            assert_eq!(mode(&dir.path().join("servers")), 0o700);
+        }
+        store.remove("ab12").unwrap();
+        assert!(store.load("ab12").unwrap().is_none());
+        store.remove("ab12").unwrap();
     }
 
     #[test]
@@ -217,16 +252,17 @@ mod tests {
 
     #[test]
     fn corrupt_credentials_file_is_an_error() {
-        let dir = std::env::temp_dir().join(format!(
-            "netvideo-client-corrupt-{}-{}",
-            std::process::id(),
-            crate::util::unix_now()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = FileStore::with_dir(dir.clone());
-        std::fs::write(store.path("srv"), b"{ not json").unwrap();
-        assert!(store.load("srv").is_err());
-        std::fs::remove_dir_all(&dir).ok();
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileStore::with_dir(dir.path().to_path_buf());
+        std::fs::write(store.path("ab12").unwrap(), b"{ not json").unwrap();
+        assert!(store.load("ab12").is_err());
+    }
+
+    #[test]
+    fn server_ids_cannot_name_other_paths() {
+        let store = FileStore::with_dir(PathBuf::from("/nonexistent"));
+        for id in ["", "../x", "AB12", "a/b", "srv"] {
+            assert!(store.path(id).is_err(), "{id:?}");
+        }
     }
 }

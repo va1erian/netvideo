@@ -19,6 +19,10 @@ struct Server {
 
 /// Starts a scanned server on a loopback port.
 fn start_server() -> Server {
+    start_server_with(SecurityConfig::default())
+}
+
+fn start_server_with(security: SecurityConfig) -> Server {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path().join("library");
     std::fs::create_dir_all(root.join("Films")).expect("library dir");
@@ -32,7 +36,7 @@ fn start_server() -> Server {
             data_dir: dir.path().join("data"),
             trusted_proxies: vec![],
         },
-        security: SecurityConfig::default(),
+        security,
         library: LibraryConfig {
             paths: vec![root],
             scan_interval_secs: 0,
@@ -168,4 +172,73 @@ fn revoked_devices_get_unauthorized_and_can_forget() {
     session.forget().expect("forget");
     assert!(store.load(&session.endpoint().id).unwrap().is_none());
     assert!(matches!(session.roots(), Err(ClientError::NotPaired)));
+}
+
+#[test]
+fn health_reports_ok() {
+    let server = start_server();
+    let health = server.session(&Arc::new(FileStore::with_dir(server.dir.path().join("c"))));
+    assert_eq!(health.client().health().expect("health").status, "ok");
+}
+
+#[test]
+fn the_server_accepts_client_proofs() {
+    use netvideo_client::auth;
+    use netvideo_client::session::{PROOF_SKEW, PROOF_TTL};
+    use netvideo_server::auth::paseto::verify_refresh_proof;
+
+    let (secret, public) = auth::generate_keypair().expect("keypair");
+    let fingerprint = auth::token_fingerprint("some.token");
+    let proof =
+        auth::issue_refresh_proof(&secret, &fingerprint, PROOF_TTL, PROOF_SKEW).expect("proof");
+    let verified = verify_refresh_proof(&public, &proof, &fingerprint).expect("accepted");
+    assert!(!verified.proof_id.is_empty());
+    assert!(verify_refresh_proof(&public, &proof, &auth::token_fingerprint("other")).is_err());
+}
+
+#[test]
+fn short_lived_tokens_are_not_refreshed_on_every_call() {
+    let server = start_server_with(SecurityConfig {
+        token_ttl_hours: 24,
+        ..SecurityConfig::default()
+    });
+    let store = Arc::new(FileStore::with_dir(server.dir.path().join("client")));
+    let session = server.session(&store);
+    session.pair(&server.code(false), "phone").expect("pair");
+    let first = session.token().expect("token");
+    session.roots().expect("roots");
+    assert_eq!(session.token().expect("token"), first);
+}
+
+#[test]
+fn a_failed_refresh_keeps_the_current_token() {
+    let server = start_server();
+    let store = Arc::new(FileStore::with_dir(server.dir.path().join("client")));
+    let session = server.session(&store);
+    let device = session.pair(&server.code(false), "phone").expect("pair");
+    let id = session.endpoint().id.clone();
+    let mut stored = store.load(&id).unwrap().unwrap();
+    stored.expires_at = unix_now() + 60;
+    store.save(&id, &stored).unwrap();
+
+    // The server refuses the refresh: the still-valid token is kept.
+    server.state.db.revoke_device(&device).expect("revoke");
+    let session = server.session(&store);
+    assert_eq!(session.token().expect("fallback"), stored.token);
+
+    // Once it expires there is nothing to fall back on.
+    stored.expires_at = unix_now() - 1;
+    store.save(&id, &stored).unwrap();
+    let session = server.session(&store);
+    assert!(matches!(session.token(), Err(ClientError::Unauthorized)));
+}
+
+#[test]
+fn viewers_forget_locally_even_though_the_server_refuses_revocation() {
+    let server = start_server();
+    let store = Arc::new(FileStore::with_dir(server.dir.path().join("client")));
+    let session = server.session(&store);
+    session.pair(&server.code(false), "tv").expect("pair");
+    session.forget().expect("forget");
+    assert!(store.load(&session.endpoint().id).unwrap().is_none());
 }

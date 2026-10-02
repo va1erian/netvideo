@@ -30,14 +30,6 @@ impl ServerEndpoint {
             url,
         })
     }
-
-    /// Returns a copy with a different display name.
-    pub fn with_name(&self, name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            ..self.clone()
-        }
-    }
 }
 
 /// Normalizes a base URL: trims whitespace, requires an `http`/`https` scheme
@@ -57,6 +49,11 @@ pub fn normalize_url(url: &str) -> Result<String> {
     if without_trailing.len() <= "https://".len() {
         return Err(ClientError::Url(format!("{trimmed:?} has no host")));
     }
+    if trimmed.contains(['?', '#']) {
+        return Err(ClientError::Url(format!(
+            "{trimmed:?} must not have a query or fragment"
+        )));
+    }
     if trimmed.contains(char::is_whitespace) {
         return Err(ClientError::Url(format!("{trimmed:?} contains whitespace")));
     }
@@ -64,7 +61,7 @@ pub fn normalize_url(url: &str) -> Result<String> {
 }
 
 /// The stable id for a normalized URL.
-pub fn endpoint_id(url: &str) -> String {
+fn endpoint_id(url: &str) -> String {
     sha256_hex(b"netvideo/endpoint/v1:", url.as_bytes())[..16].to_string()
 }
 
@@ -90,6 +87,8 @@ mod tests {
         assert!(normalize_url("").is_err());
         assert!(normalize_url("https://").is_err());
         assert!(normalize_url("https://bad host").is_err());
+        assert!(normalize_url("https://video.example.com/?x=1").is_err());
+        assert!(normalize_url("https://video.example.com/#top").is_err());
     }
 
     #[test]

@@ -1078,7 +1078,6 @@ dependencies = [
  "axum",
  "dirs",
  "hex",
- "http",
  "netvideo-server",
  "pasetors",
  "serde",

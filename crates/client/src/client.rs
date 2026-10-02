@@ -20,6 +20,8 @@ use crate::types::{
 
 /// Maximum bytes buffered for a JSON response (a 1000-entry folder page).
 const MAX_JSON_BYTES: usize = 8 * 1024 * 1024;
+/// Largest folder page the server returns.
+pub const MAX_PAGE: u32 = 1000;
 /// Maximum bytes buffered for an error body.
 const MAX_ERROR_BYTES: usize = 64 * 1024;
 
@@ -41,6 +43,9 @@ impl RemoteClient {
             .timeout_connect(Some(Duration::from_secs(15)))
             .timeout_recv_response(Some(Duration::from_secs(30)))
             .timeout_recv_body(Some(Duration::from_secs(60)))
+            // A redirect (typically http to https at the proxy) would turn a
+            // POST into a GET; fail clearly instead of following it.
+            .max_redirects(0)
             .build();
         Ok(Self {
             base,
@@ -53,11 +58,6 @@ impl RemoteClient {
         Self::new(&endpoint.url)
     }
 
-    /// The normalized base URL.
-    pub fn base_url(&self) -> &str {
-        &self.base
-    }
-
     fn url(&self, path: &str) -> String {
         format!("{}{path}", self.base)
     }
@@ -66,8 +66,13 @@ impl RemoteClient {
         request.header("Authorization", format!("Bearer {token}"))
     }
 
-    fn decode<T: DeserializeOwned>(response: http::Response<ureq::Body>) -> Result<T> {
+    fn decode<T: DeserializeOwned>(response: ureq::http::Response<ureq::Body>) -> Result<T> {
         let status = response.status().as_u16();
+        if (300..400).contains(&status) {
+            return Err(ClientError::Url(
+                "the server redirected; use its https:// address".into(),
+            ));
+        }
         if status == 401 {
             return Err(ClientError::Unauthorized);
         }
@@ -81,14 +86,30 @@ impl RemoteClient {
         serde_json::from_slice(&bytes).map_err(|error| ClientError::Protocol(error.to_string()))
     }
 
+    /// GETs `url` and decodes its JSON. GETs are idempotent, so one
+    /// interrupted by a signal (`EINTR`, which socket reads with a timeout
+    /// return even under `SA_RESTART`) is retried once.
+    fn get_json<T: DeserializeOwned>(&self, url: &str, token: Option<&str>) -> Result<T> {
+        let mut retried = false;
+        loop {
+            let mut request = self.agent.get(url);
+            if let Some(token) = token {
+                request = Self::bearer(request, token);
+            }
+            match request.call() {
+                Err(ureq::Error::Io(error))
+                    if error.kind() == std::io::ErrorKind::Interrupted && !retried =>
+                {
+                    retried = true;
+                }
+                result => return Self::decode(result.map_err(map_transport)?),
+            }
+        }
+    }
+
     /// `GET /api/v1/health`.
     pub fn health(&self) -> Result<Health> {
-        let response = self
-            .agent
-            .get(self.url("/api/v1/health"))
-            .call()
-            .map_err(map_transport)?;
-        Self::decode(response)
+        self.get_json(&self.url("/api/v1/health"), None)
     }
 
     /// `POST /api/v1/auth/pair`.
@@ -127,10 +148,7 @@ impl RemoteClient {
 
     /// `GET /api/v1/roots`.
     pub fn roots(&self, token: &str) -> Result<Vec<FolderRef>> {
-        let response = Self::bearer(self.agent.get(self.url("/api/v1/roots")), token)
-            .call()
-            .map_err(map_transport)?;
-        Self::decode(response)
+        self.get_json(&self.url("/api/v1/roots"), Some(token))
     }
 
     /// `GET /api/v1/folders/{id}`, one page from `cursor` (the start when
@@ -142,6 +160,7 @@ impl RemoteClient {
         cursor: Option<&str>,
         limit: u32,
     ) -> Result<FolderPage> {
+        let limit = limit.clamp(1, MAX_PAGE);
         let mut url = self.url(&format!(
             "/api/v1/folders/{}?limit={limit}",
             encode_segment(folder_id)
@@ -150,19 +169,13 @@ impl RemoteClient {
             url.push_str("&cursor=");
             url.push_str(&encode_segment(cursor));
         }
-        let response = Self::bearer(self.agent.get(url), token)
-            .call()
-            .map_err(map_transport)?;
-        Self::decode(response)
+        self.get_json(&url, Some(token))
     }
 
     /// `GET /api/v1/videos/{id}`.
     pub fn video(&self, token: &str, video_id: &str) -> Result<VideoDetail> {
         let url = self.url(&format!("/api/v1/videos/{}", encode_segment(video_id)));
-        let response = Self::bearer(self.agent.get(url), token)
-            .call()
-            .map_err(map_transport)?;
-        Self::decode(response)
+        self.get_json(&url, Some(token))
     }
 
     /// `PUT /api/v1/videos/{id}/progress`.
@@ -199,8 +212,13 @@ impl RemoteClient {
         Self::expect_success(response)
     }
 
-    fn expect_success(response: http::Response<ureq::Body>) -> Result<()> {
+    fn expect_success(response: ureq::http::Response<ureq::Body>) -> Result<()> {
         let status = response.status().as_u16();
+        if (300..400).contains(&status) {
+            return Err(ClientError::Url(
+                "the server redirected; use its https:// address".into(),
+            ));
+        }
         if status == 401 {
             return Err(ClientError::Unauthorized);
         }
@@ -215,7 +233,7 @@ impl RemoteClient {
 }
 
 /// Reads at most `max` bytes of a response body.
-fn read_capped(response: http::Response<ureq::Body>, max: usize) -> Result<Vec<u8>> {
+fn read_capped(response: ureq::http::Response<ureq::Body>, max: usize) -> Result<Vec<u8>> {
     let reader = response.into_body().into_reader();
     let mut buffer = Vec::new();
     let read = reader
@@ -231,7 +249,7 @@ fn read_capped(response: http::Response<ureq::Body>, max: usize) -> Result<Vec<u
 }
 
 /// Extracts the server's error message, falling back to the status text.
-fn error_message(response: http::Response<ureq::Body>) -> String {
+fn error_message(response: ureq::http::Response<ureq::Body>) -> String {
     let status = response.status();
     match read_capped(response, MAX_ERROR_BYTES)
         .ok()
