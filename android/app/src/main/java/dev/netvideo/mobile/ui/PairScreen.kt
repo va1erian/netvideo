@@ -1,6 +1,7 @@
 package dev.netvideo.mobile.ui
 
 import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -29,15 +30,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import dev.netvideo.mobile.data.Sessions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.netvideo_mobile.MobileSession
+import uniffi.netvideo_mobile.parsePairingLink
 
 /**
- * Pairs this phone with a server. The server is checked before the code is
- * sent, so a mistyped address does not burn a one-time code.
+ * Pairs this phone with a server, by scanning `netvideo-server pair --qr`
+ * or by typing the address and code. A scanned code also pins the server's
+ * key, so an impostor answering at that address is refused. The server is
+ * checked before the code is sent, so a mistyped address does not burn it.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -50,15 +56,15 @@ fun PairScreen(onPaired: (MobileSession) -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
-    fun pair() {
+    fun pair(serverUrl: String, pairingCode: String, fingerprint: String?) {
         busy = true
         error = null
         scope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    val session = Sessions.open(context, url.trim())
+                    val session = Sessions.open(context, serverUrl)
                     session.checkServer()
-                    session.pair(code, name.trim().ifEmpty { "Android" })
+                    session.pair(pairingCode, name.trim().ifEmpty { "Android" }, fingerprint)
                     Sessions.remember(context, session)
                     session
                 }
@@ -66,6 +72,17 @@ fun PairScreen(onPaired: (MobileSession) -> Unit) {
             busy = false
             result.onSuccess(onPaired).onFailure { error = it.userMessage() }
         }
+    }
+
+    val scanner = rememberLauncherForActivityResult(ScanContract()) { scan ->
+        val text = scan.contents ?: return@rememberLauncherForActivityResult
+        runCatching { parsePairingLink(text) }
+            .onSuccess { link ->
+                url = link.url
+                code = link.code
+                pair(link.url, link.code, link.keyFingerprint)
+            }
+            .onFailure { error = it.userMessage() }
     }
 
     Scaffold(topBar = { TopAppBar(title = { Text("Pair with your server") }) }) { insets ->
@@ -78,9 +95,26 @@ fun PairScreen(onPaired: (MobileSession) -> Unit) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
-                "On the server, run `netvideo-server pair --viewer` to get a 6-digit code " +
-                    "(drop `--viewer` to make this phone an admin).",
+                "On the server, run `netvideo-server pair --viewer --qr --url <address>` " +
+                    "and scan the code it shows (drop `--viewer` to make this phone an admin).",
                 style = MaterialTheme.typography.bodyMedium,
+            )
+            Button(
+                enabled = !busy,
+                onClick = {
+                    scanner.launch(
+                        ScanOptions()
+                            .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                            .setPrompt("Scan the code printed by netvideo-server pair --qr")
+                            .setBeepEnabled(false)
+                            .setOrientationLocked(false),
+                    )
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Scan QR code") }
+            Text(
+                "Or type the address and the 6-digit code:",
+                style = MaterialTheme.typography.bodySmall,
             )
             OutlinedTextField(
                 value = url,
@@ -111,7 +145,7 @@ fun PairScreen(onPaired: (MobileSession) -> Unit) {
             } else {
                 Button(
                     enabled = url.length > "https://".length && code.length == 6,
-                    onClick = ::pair,
+                    onClick = { pair(url.trim(), code, null) },
                     modifier = Modifier.align(Alignment.End),
                 ) { Text("Pair") }
             }

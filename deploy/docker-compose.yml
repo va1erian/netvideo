@@ -3,8 +3,10 @@
 # Cosmos Cloud terminates TLS and routes https://video.homelab.net to the
 # internal port 8080; netvideo-server runs plain HTTP inside the bridge network.
 #
-# First pairing (admin device):
-#   docker exec -it netvideo-server netvideo-server pair
+# First pairing (admin device): scan the QR code with the Android app, or
+# type the address and the printed code.
+#   docker exec -it netvideo-server netvideo-server pair --qr
+# Viewer devices: add --viewer.
 
 services:
   netvideo-server:
@@ -18,6 +20,8 @@ services:
     environment:
       - RUST_LOG=info,netvideo_server=debug
       - NETVIDEO_LIBRARY_PATHS=/media/videos
+      # The address clients use, put in pairing QR codes (`pair --qr`).
+      - NETVIDEO_PUBLIC_URL=https://video.homelab.net
       # Docker bridges cannot reach each other, so this only trusts peers on
       # netvideo's own network. Narrow it to that network's subnet if other
       # containers share it.

@@ -43,6 +43,26 @@ pub fn secret_key_paserk(key: &AsymmetricSecretKey<V4>) -> Result<String> {
     Ok(out)
 }
 
+/// The fingerprint of a server's PASERK `k4.public` key, as carried by
+/// pairing QR codes. Must match `netvideo-server`'s `server_key_fingerprint`.
+pub fn server_key_fingerprint(public_paserk: &str) -> String {
+    sha256_hex(b"netvideo/server-key/v1:", public_paserk.as_bytes())
+}
+
+/// Checks that `token` is signed by the server key `public_paserk`. Only
+/// the signature is checked: expiry is the server's business, and a device
+/// clock that is off must not make a genuine token look forged.
+pub fn verify_server_token(public_paserk: &str, token: &str) -> Result<()> {
+    use pasetors::token::UntrustedToken;
+    use pasetors::version4::PublicToken;
+    let key = AsymmetricPublicKey::<V4>::try_from(public_paserk.trim())
+        .map_err(|_| ClientError::ServerKey)?;
+    let untrusted = UntrustedToken::<pasetors::Public, V4>::try_from(token)
+        .map_err(|_| ClientError::ServerKey)?;
+    PublicToken::verify(&key, &untrusted, None, None).map_err(|_| ClientError::ServerKey)?;
+    Ok(())
+}
+
 /// Parses a stored PASERK secret key.
 pub fn parse_secret_key(encoded: &str) -> Result<AsymmetricSecretKey<V4>> {
     AsymmetricSecretKey::<V4>::try_from(encoded.trim())

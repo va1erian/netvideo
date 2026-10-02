@@ -32,6 +32,13 @@ enum Command {
         /// Pair a viewer device instead of an administrator.
         #[arg(long)]
         viewer: bool,
+        /// Also print a QR code carrying the server URL and key fingerprint,
+        /// which the Android app scans to pair without typing.
+        #[arg(long, requires = "url")]
+        qr: bool,
+        /// The address clients reach the server at, for `--qr`.
+        #[arg(long, env = "NETVIDEO_PUBLIC_URL")]
+        url: Option<String>,
     },
     /// List paired devices.
     Devices,
@@ -56,12 +63,21 @@ fn main() -> Result<()> {
                 .block_on(server::run(config))
                 .context("running server")?;
         }
-        Command::Pair { ttl, viewer } => {
+        Command::Pair {
+            ttl,
+            viewer,
+            qr,
+            url,
+        } => {
             let _audit = audit::init(&config.server.data_dir).context("opening audit log")?;
             let ttl = ttl.min(netvideo_server::config::MAX_PAIRING_CODE_TTL_SECS);
             let code =
                 server::print_pairing_code(&config, ttl, !viewer).context("generating code")?;
             audit::pairing_code_created("cli", None, !viewer);
+            if let (true, Some(url)) = (qr, url) {
+                let qr = server::pairing_qr(&config, &url, &code).context("building QR code")?;
+                println!("{qr}");
+            }
             println!("{code}");
             let role = if viewer { "viewer" } else { "admin" };
             println!("Pairing code ({role}) valid for {ttl}s; enter it in the netvideo client.");

@@ -8,8 +8,14 @@ use std::sync::Arc;
 use netvideo_client::{ServerEndpoint, Session};
 
 use crate::error::MobileError;
-use crate::types::{FolderPage, FolderRef, VideoDetail};
+use crate::types::{FolderPage, FolderRef, PairingLink, VideoDetail};
 use crate::vault::{SecretVault, VaultStore};
+
+/// Parses a scanned pairing QR code (`netvideo-server pair --qr`).
+#[uniffi::export]
+pub fn parse_pairing_link(text: String) -> Result<PairingLink, MobileError> {
+    Ok(netvideo_client::PairingLink::parse(&text)?.into())
+}
 
 /// One server's session: pairing, automatic token refresh and browsing.
 #[derive(uniffi::Object)]
@@ -51,9 +57,18 @@ impl MobileSession {
         self.session.device_id().is_some()
     }
 
-    /// Pairs with a one-time code and returns the new device id.
-    pub fn pair(&self, code: String, device_name: String) -> Result<String, MobileError> {
-        Ok(self.session.pair(&code, &device_name)?)
+    /// Pairs with a one-time code and returns the new device id. With the
+    /// `key_fingerprint` of a scanned [`PairingLink`], a server holding any
+    /// other key is refused ([`MobileError::ServerMismatch`]).
+    pub fn pair(
+        &self,
+        code: String,
+        device_name: String,
+        key_fingerprint: Option<String>,
+    ) -> Result<String, MobileError> {
+        Ok(self
+            .session
+            .pair_pinned(&code, &device_name, key_fingerprint.as_deref())?)
     }
 
     /// The `Authorization` header value for requests Kotlin makes itself

@@ -69,7 +69,7 @@ fn pairs_browses_and_resumes() {
     let session = MobileSession::new(url, Arc::new(MemoryVault::default())).unwrap();
     session.check_server().unwrap();
     assert!(matches!(
-        session.pair("000000".into(), "phone".into()),
+        session.pair("000000".into(), "phone".into(), None),
         Err(MobileError::PairingCode)
     ));
     let code = netvideo_server::auth::pairing::generate_pairing_code(
@@ -80,7 +80,15 @@ fn pairs_browses_and_resumes() {
         unix_now(),
     )
     .unwrap();
-    session.pair(code, "phone".into()).unwrap();
+    let link = netvideo_mobile::parse_pairing_link(format!(
+        "netvideo://pair?v=1&url=x%3A&code={code}&key={}",
+        state.keys.fingerprint().unwrap()
+    ));
+    assert!(link.is_err(), "the URL must be http(s)");
+    let fingerprint = state.keys.fingerprint().unwrap();
+    session
+        .pair(code, "phone".into(), Some(fingerprint))
+        .unwrap();
     assert!(session.is_paired());
 
     let roots = session.roots().unwrap();

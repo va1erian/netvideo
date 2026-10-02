@@ -24,6 +24,11 @@ pub enum ClientError {
         message: String,
     },
 
+    /// The server is not the one the pairing QR code named, or a token was
+    /// not signed by the server key this device paired with.
+    #[error("the server's identity does not match the one this device paired with")]
+    ServerKey,
+
     /// The device's token is expired or revoked and cannot be refreshed.
     #[error("unauthorized; the device may have been revoked or must pair again")]
     Unauthorized,

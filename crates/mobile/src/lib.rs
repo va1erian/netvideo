@@ -18,6 +18,8 @@ mod types;
 mod vault;
 
 pub use error::MobileError;
-pub use session::MobileSession;
-pub use types::{FolderPage, FolderRef, Progress, StreamInfo, VideoDetail, VideoSummary};
+pub use session::{MobileSession, parse_pairing_link};
+pub use types::{
+    FolderPage, FolderRef, PairingLink, Progress, StreamInfo, VideoDetail, VideoSummary,
+};
 pub use vault::SecretVault;

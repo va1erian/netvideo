@@ -17,13 +17,14 @@ path = "src/main.rs"
 anyhow = "1"
 axum = { version = "0.8", features = ["macros"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 dirs = "5"
 hex = "0.4"
 hmac = "0.12"
 hyper-util = { version = "0.1", features = ["tokio"] }
 ipnet = "2"
 pasetors = "0.8"
+qrcode = { version = "0.14", default-features = false }
 r2d2 = "0.8"
 r2d2_sqlite = "0.25"
 rand = "0.8"

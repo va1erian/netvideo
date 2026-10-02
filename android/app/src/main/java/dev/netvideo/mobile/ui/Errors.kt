@@ -7,6 +7,8 @@ fun Throwable.userMessage(): String = when (this) {
     is MobileException.NotPaired -> "This phone is not paired yet."
     is MobileException.PairingCode -> "That pairing code is wrong, expired or already used."
     is MobileException.Unauthorized -> "This phone was unpaired from the server. Pair it again."
+    is MobileException.ServerMismatch ->
+        "This server is not the one the QR code named. Check the address before trusting it."
     is MobileException.Network -> "Cannot reach the server (${detail})."
     is MobileException.InvalidUrl -> detail
     is MobileException.Server -> detail

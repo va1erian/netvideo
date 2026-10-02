@@ -17,6 +17,12 @@ use crate::error::{Result, ServerError};
 /// File name of the persisted server secret key.
 pub const KEY_FILE: &str = "server.key";
 
+/// The fingerprint of a PASERK `k4.public` server key. Clients compute the
+/// same value (`netvideo-client`'s `server_key_fingerprint`).
+pub fn server_key_fingerprint(public_paserk: &str) -> String {
+    crate::util::sha256_hex(b"netvideo/server-key/v1:", public_paserk.as_bytes())
+}
+
 /// The server keypair, kept in memory for the process lifetime.
 #[derive(Clone)]
 pub struct ServerKey {
@@ -102,6 +108,18 @@ impl ServerKey {
     /// The server's public key, used to verify issued tokens.
     pub fn public(&self) -> &AsymmetricPublicKey<V4> {
         &self.public
+    }
+
+    /// The public key as a PASERK `k4.public` string, sent to clients at
+    /// pairing so they can check every token they receive.
+    pub fn public_paserk(&self) -> Result<String> {
+        crate::auth::paseto::public_key_paserk(&self.public)
+    }
+
+    /// The fingerprint a pairing QR code carries, so a client can tell the
+    /// real server's key from an impostor's.
+    pub fn fingerprint(&self) -> Result<String> {
+        Ok(server_key_fingerprint(&self.public_paserk()?))
     }
 
     /// The server's secret key, used to sign tokens.

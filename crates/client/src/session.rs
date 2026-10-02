@@ -67,14 +67,39 @@ impl Session {
             .map(|c| c.device_id.clone())
     }
 
+    /// Pairs with a typed one-time code; see [`Session::pair_pinned`].
+    pub fn pair(&self, pairing_code: &str, device_name: &str) -> Result<String> {
+        self.pair_pinned(pairing_code, device_name, None)
+    }
+
     /// Pairs with a one-time code, generating a fresh device key, and
     /// stores the credentials. Returns the new device id.
-    pub fn pair(&self, pairing_code: &str, device_name: &str) -> Result<String> {
+    ///
+    /// The server's key is pinned: with `key_fingerprint` (from a pairing QR
+    /// code) it must match, and either way every later token must be signed
+    /// by it. A server that does not send its key is accepted only without a
+    /// fingerprint, for servers that predate pinning.
+    pub fn pair_pinned(
+        &self,
+        pairing_code: &str,
+        device_name: &str,
+        key_fingerprint: Option<&str>,
+    ) -> Result<String> {
         let (secret, public) = auth::generate_keypair()?;
         let public = auth::public_key_paserk(&public)?;
         let paired = self
             .client
             .pair(pairing_code.trim(), device_name, &public)?;
+        match (&paired.server_key, key_fingerprint) {
+            (Some(key), expected) => {
+                if expected.is_some_and(|fp| auth::server_key_fingerprint(key) != fp) {
+                    return Err(ClientError::ServerKey);
+                }
+                auth::verify_server_token(key, &paired.auth_token)?;
+            }
+            (None, Some(_)) => return Err(ClientError::ServerKey),
+            (None, None) => {}
+        }
         let credentials = Credentials {
             device_id: paired.device_id.clone(),
             device_name: paired.device_name,
@@ -82,6 +107,7 @@ impl Session {
             token: paired.auth_token,
             lifetime_secs: paired.expires_at - unix_now(),
             expires_at: paired.expires_at,
+            server_key: paired.server_key,
         };
         let mut guard = lock(&self.credentials);
         self.store.save(&self.endpoint.id, &credentials)?;
@@ -124,6 +150,9 @@ impl Session {
         let proof =
             auth::issue_refresh_proof(&current.secret_key()?, &fingerprint, PROOF_TTL, PROOF_SKEW)?;
         let renewed = self.client.refresh(&current.token, &proof)?;
+        if let Some(key) = &current.server_key {
+            auth::verify_server_token(key, &renewed.auth_token)?;
+        }
         let mut guard = lock(&self.credentials);
         let still_current = guard
             .as_ref()

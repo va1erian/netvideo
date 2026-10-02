@@ -156,6 +156,13 @@ pub fn print_pairing_code(config: &Config, ttl_secs: u64, grants_admin: bool) ->
     Ok(code)
 }
 
+/// The terminal QR code for a pairing `code`, for `pair --qr`.
+pub fn pairing_qr(config: &Config, url: &str, code: &str) -> Result<String> {
+    let key = ServerKey::load_or_create(&key_path(&config.server.data_dir))?;
+    let link = crate::auth::link::pairing_link(url, code, &key.fingerprint()?)?;
+    crate::auth::link::render_qr(&link)
+}
+
 /// Lists paired devices, for the `devices` CLI subcommand.
 pub fn list_devices(config: &Config) -> Result<Vec<crate::db::models::Device>> {
     let db = Db::open(&config.server.data_dir)?;

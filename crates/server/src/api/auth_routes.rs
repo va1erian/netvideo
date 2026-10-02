@@ -56,6 +56,9 @@ pub struct PairResponse {
     pub auth_token: String,
     /// Token expiry (Unix seconds).
     pub expires_at: i64,
+    /// The server's PASERK public key: clients pin it and check that every
+    /// token they receive is signed by it.
+    pub server_key: String,
 }
 
 /// Refresh request body.
@@ -152,6 +155,7 @@ pub async fn pair(
         return Err(ApiError::too_many_requests());
     }
 
+    let server_key = state.keys.public_paserk().map_err(ApiError::from)?;
     let db = state.db.clone();
     let keys = Arc::clone(&state.keys);
     let ttl = state.token_ttl();
@@ -178,6 +182,7 @@ pub async fn pair(
                 device_name: outcome.device.name,
                 auth_token: outcome.token.token,
                 expires_at: outcome.token.expires_at,
+                server_key,
             }))
         }
         Err(error) => {

@@ -126,6 +126,7 @@ dependencies {
         }
     }
     implementation(libs.lucide.icons)
+    implementation(libs.zxing.embedded)
 
     testImplementation(libs.junit)
 }

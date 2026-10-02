@@ -242,3 +242,55 @@ fn viewers_forget_locally_even_though_the_server_refuses_revocation() {
     session.forget().expect("forget");
     assert!(store.load(&session.endpoint().id).unwrap().is_none());
 }
+
+#[test]
+fn pins_the_server_key_from_a_pairing_link() {
+    let server = start_server();
+    let store = Arc::new(FileStore::with_dir(server.dir.path().join("client")));
+    let session = server.session(&store);
+    let real = server.state.keys.fingerprint().expect("fingerprint");
+
+    let wrong = "0".repeat(64);
+    assert!(matches!(
+        session.pair_pinned(&server.code(false), "phone", Some(&wrong)),
+        Err(ClientError::ServerKey)
+    ));
+    assert!(
+        session.device_id().is_none(),
+        "nothing stored on a mismatch"
+    );
+
+    session
+        .pair_pinned(&server.code(false), "phone", Some(&real))
+        .expect("pair");
+    let id = session.endpoint().id.clone();
+    let stored = store.load(&id).unwrap().unwrap();
+    assert_eq!(
+        stored
+            .server_key
+            .as_deref()
+            .map(netvideo_client::auth::server_key_fingerprint),
+        Some(real)
+    );
+}
+
+#[test]
+fn tokens_from_another_key_are_refused_on_refresh() {
+    let server = start_server();
+    let store = Arc::new(FileStore::with_dir(server.dir.path().join("client")));
+    let session = server.session(&store);
+    session.pair(&server.code(false), "phone").expect("pair");
+
+    // Pin some other server's key, then make the token due for refresh.
+    let (_, other) = netvideo_client::auth::generate_keypair().unwrap();
+    let id = session.endpoint().id.clone();
+    let mut stored = store.load(&id).unwrap().unwrap();
+    stored.server_key = Some(netvideo_client::auth::public_key_paserk(&other).unwrap());
+    stored.expires_at = unix_now() + 60;
+    store.save(&id, &stored).unwrap();
+
+    // The renewed token fails the pin, so the current one is kept.
+    let session = server.session(&store);
+    assert_eq!(session.token().expect("fallback"), stored.token);
+    assert_eq!(store.load(&id).unwrap().unwrap().token, stored.token);
+}

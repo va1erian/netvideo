@@ -1,6 +1,7 @@
 //! Authentication: server keys, PASETO tokens and device pairing.
 
 pub mod keys;
+pub mod link;
 pub mod middleware;
 pub mod pairing;
 pub mod paseto;
