@@ -7,6 +7,7 @@ use axum::http::StatusCode;
 use serde::Deserialize;
 
 use crate::api::error::ApiError;
+use crate::api::json::ApiJson;
 use crate::auth::middleware::{AdminDevice, AuthDevice};
 use crate::db::models::{FolderPage, FolderRef, VideoDetail};
 use crate::state::AppState;
@@ -88,9 +89,8 @@ const MAX_POSITION_MS: i64 = 7 * 24 * 3600 * 1000;
 pub struct ProgressRequest {
     /// Resume position in milliseconds.
     pub position_ms: i64,
-    /// Whether the video counts as watched.
-    #[serde(default)]
-    pub watched: bool,
+    /// Whether the video counts as watched; left unchanged when absent.
+    pub watched: Option<bool>,
 }
 
 /// `PUT /api/v1/videos/{id}/progress`: saves this device's position.
@@ -98,7 +98,7 @@ pub async fn save_progress(
     State(state): State<AppState>,
     AuthDevice(device): AuthDevice,
     Path(id): Path<String>,
-    Json(request): Json<ProgressRequest>,
+    ApiJson(request): ApiJson<ProgressRequest>,
 ) -> Result<StatusCode, ApiError> {
     if !(0..=MAX_POSITION_MS).contains(&request.position_ms) {
         return Err(ApiError::bad_request("position_ms is out of range"));

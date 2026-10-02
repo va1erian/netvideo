@@ -7,14 +7,15 @@ use crate::db::models::Progress;
 use crate::error::Result;
 
 impl Db {
-    /// Saves `device_id`'s progress on `video_id`. Returns `false` when the
-    /// video does not exist.
+    /// Saves `device_id`'s progress on `video_id`. `watched` keeps its
+    /// stored value when `None` (false for a new row). Returns `false` when
+    /// the video does not exist.
     pub fn save_progress(
         &self,
         device_id: &str,
         video_id: &str,
         position_ms: i64,
-        watched: bool,
+        watched: Option<bool>,
         now: i64,
     ) -> Result<bool> {
         let conn = self.conn()?;
@@ -22,10 +23,10 @@ impl Db {
         // orphan row (the foreign key would reject it anyway).
         let written = conn.execute(
             "INSERT INTO progress (device_id, video_id, position_ms, watched, updated_at)
-             SELECT ?1, id, ?3, ?4, ?5 FROM videos WHERE id = ?2
+             SELECT ?1, id, ?3, COALESCE(?4, 0), ?5 FROM videos WHERE id = ?2
              ON CONFLICT (device_id, video_id) DO UPDATE SET
                  position_ms = excluded.position_ms,
-                 watched = excluded.watched,
+                 watched = COALESCE(?4, watched),
                  updated_at = excluded.updated_at",
             params![device_id, video_id, position_ms, watched, now],
         )?;
