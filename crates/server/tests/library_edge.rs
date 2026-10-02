@@ -82,6 +82,22 @@ async fn an_unmounted_subfolder_keeps_its_rows() {
     assert_eq!(scan(&harness).await.removed, 1);
 }
 
+#[tokio::test]
+async fn deleting_a_video_beside_its_sidecars_prunes_it() {
+    let harness = unprobed();
+    write(&harness, "Films/Heat/Heat.mkv", b"heat");
+    write(&harness, "Films/Heat/Heat.srt", b"subtitles");
+    write(&harness, "Films/Heat/.poster.jpg", b"hidden poster");
+    write(&harness, "Films/Other/x.mkv", b"x");
+    scan(&harness).await;
+
+    // The folder still holds files, so the video was deleted, not unmounted.
+    std::fs::remove_file(harness.library.join("Films/Heat/Heat.mkv")).unwrap();
+    let stats = scan(&harness).await;
+    assert_eq!(stats.removed, 1);
+    assert!(!stats.partial);
+}
+
 /// A scanned 10-byte video and the URI and ETag of its file.
 async fn served_video(harness: &Harness, token: &str) -> (String, HeaderValue) {
     write(harness, "movie.mp4", b"0123456789");

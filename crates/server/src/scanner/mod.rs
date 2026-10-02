@@ -230,32 +230,16 @@ impl Scanner {
 
 /// Whether a found video needs its row written or its metadata read.
 /// Known videos the walk did not see, under a folder that still exists but
-/// is now empty. An unmounted share or a missing bind mount looks exactly
-/// like that, at the root or deeper, and pruning would delete every row and
-/// id beneath it.
+/// has no entries at all. An unmounted share or a missing bind mount looks
+/// exactly like that, at the root or deeper, and pruning would delete every
+/// row and id beneath it. A folder that still holds anything (subtitles,
+/// posters, hidden files) is not shielded: its missing videos were deleted.
 fn shielded_videos(walk: &RootWalk, known: &HashMap<String, KnownVideo>) -> Vec<String> {
     let seen: HashSet<&str> = walk.videos.iter().map(|v| v.rel_path.as_str()).collect();
-    // A folder is empty when no walked entry lives beneath it.
-    let mut occupied: HashSet<&str> = HashSet::new();
-    let entries = walk
-        .dirs
-        .iter()
-        .map(|d| d.rel_path.as_str())
-        .chain(seen.iter().copied());
-    for entry in entries {
-        occupied.extend(ancestors(entry));
-    }
-    let empty: HashSet<&str> = walk
-        .dirs
-        .iter()
-        .map(|d| d.rel_path.as_str())
-        .chain(std::iter::once(""))
-        .filter(|dir| !occupied.contains(dir))
-        .collect();
     known
         .keys()
         .filter(|rel| !seen.contains(rel.as_str()))
-        .filter(|rel| ancestors(rel).any(|dir| empty.contains(dir)))
+        .filter(|rel| ancestors(rel).any(|dir| walk.empty_dirs.contains(dir)))
         .cloned()
         .collect()
 }

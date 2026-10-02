@@ -6,6 +6,7 @@
 //! or a subtree that cannot be listed, marks the walk partial so existing rows
 //! are never deleted on the strength of a scan that could not see everything.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
@@ -27,7 +28,7 @@ pub struct FoundVideo {
     pub rel_path: String,
     /// File size in bytes.
     pub size: u64,
-    /// Modification time as Unix seconds.
+    /// Modification time in nanoseconds since the Unix epoch.
     pub mtime_ns: i64,
 }
 
@@ -38,6 +39,9 @@ pub struct RootWalk {
     pub dirs: Vec<FoundDir>,
     /// Video files found.
     pub videos: Vec<FoundVideo>,
+    /// Directories with no entries at all, not even hidden or non-video
+    /// files (`""` is the root). An unmounted share looks like this.
+    pub empty_dirs: HashSet<String>,
     /// Whether the root itself could not be read.
     pub unreachable: bool,
     /// Whether some entry could not be read.
@@ -59,6 +63,9 @@ pub fn walk_root(root: &Path) -> RootWalk {
         return outcome;
     }
 
+    if is_empty_dir(root) {
+        outcome.empty_dirs.insert(String::new());
+    }
     let walker = WalkDir::new(root)
         .min_depth(1)
         .follow_links(false)
@@ -80,6 +87,9 @@ pub fn walk_root(root: &Path) -> RootWalk {
             continue;
         };
         if file_type.is_dir() {
+            if is_empty_dir(entry.path()) {
+                outcome.empty_dirs.insert(rel_path.clone());
+            }
             outcome.dirs.push(FoundDir { rel_path });
         } else if file_type.is_file() && video_mime(&rel_path).is_some() {
             let Ok(metadata) = entry.metadata() else {
@@ -94,6 +104,12 @@ pub fn walk_root(root: &Path) -> RootWalk {
         }
     }
     outcome
+}
+
+/// Whether `dir` lists no entries. An unreadable directory is not empty: it
+/// already makes the walk partial.
+fn is_empty_dir(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_none())
 }
 
 /// Dot-files and dot-directories, including names that are not UTF-8.
