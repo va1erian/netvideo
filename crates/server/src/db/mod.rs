@@ -4,6 +4,7 @@ pub mod browse;
 pub mod devices;
 pub mod library;
 pub mod models;
+pub mod progress;
 pub mod roots;
 pub mod schema;
 

@@ -26,6 +26,14 @@ impl ApiError {
         }
     }
 
+    /// Builds a payload-too-large (413) response.
+    pub fn payload_too_large() -> Self {
+        Self {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            message: "request body too large".into(),
+        }
+    }
+
     /// Builds a bad-request (400) response.
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self {

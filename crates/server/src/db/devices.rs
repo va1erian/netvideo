@@ -31,13 +31,17 @@ impl Db {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Revokes a device. Returns `true` when a row was affected.
+    /// Revokes a device and forgets its playback progress. Returns `true`
+    /// when a row was affected.
     pub fn revoke_device(&self, id: &str) -> Result<bool> {
-        let conn = self.conn()?;
-        let affected = conn.execute(
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        let affected = tx.execute(
             "UPDATE devices SET is_revoked = 1 WHERE id = ?1 AND is_revoked = 0",
             [id],
         )?;
+        tx.execute("DELETE FROM progress WHERE device_id = ?1", [id])?;
+        tx.commit()?;
         Ok(affected > 0)
     }
 

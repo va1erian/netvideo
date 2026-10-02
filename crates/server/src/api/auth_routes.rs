@@ -11,6 +11,7 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use crate::api::error::ApiError;
+use crate::api::json::ApiJson;
 use crate::audit;
 use crate::auth::middleware::{AdminDevice, AuthDevice, ClientIp, bearer_token};
 use crate::auth::pairing;
@@ -126,7 +127,7 @@ pub struct PairingCodeResponse {
 pub async fn pair(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    Json(request): Json<PairRequest>,
+    ApiJson(request): ApiJson<PairRequest>,
 ) -> Result<Json<PairResponse>, ApiError> {
     let ip_text = ip.to_string();
     let window = Duration::from_secs(60);
@@ -192,7 +193,7 @@ pub async fn refresh(
     ClientIp(ip): ClientIp,
     AuthDevice(device): AuthDevice,
     headers: HeaderMap,
-    Json(request): Json<RefreshRequest>,
+    ApiJson(request): ApiJson<RefreshRequest>,
 ) -> Result<Json<TokenResponse>, ApiError> {
     let ip_text = ip.to_string();
     let token =

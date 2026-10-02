@@ -122,6 +122,19 @@ pub struct VideoSummary {
     pub width: Option<i64>,
     /// Height of the first video stream, when probed.
     pub height: Option<i64>,
+    /// The requesting device's playback progress, when it has any.
+    pub progress: Option<Progress>,
+}
+
+/// One device's playback progress on a video.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Progress {
+    /// Resume position in milliseconds.
+    pub position_ms: i64,
+    /// Whether the device marked the video as watched.
+    pub watched: bool,
+    /// When the progress was last saved (Unix seconds).
+    pub updated_at: i64,
 }
 
 /// One page of a folder's contents: subfolders first, then videos, each
@@ -165,6 +178,8 @@ pub struct VideoDetail {
     pub bitrate: Option<i64>,
     /// Video, audio and subtitle streams.
     pub streams: Vec<StreamInfo>,
+    /// The requesting device's playback progress, when it has any.
+    pub progress: Option<Progress>,
 }
 
 /// Where a video lives on disk, for the file-serving path.

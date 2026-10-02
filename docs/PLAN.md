@@ -142,7 +142,7 @@ streams     (video_id, index, kind[video|audio|subtitle], codec, profile,
 sidecars    (video_id, path, kind, language, format)
 tombstones  (kind, id, sync_version, deleted_at)
 devices, pairing_codes, meta  (from emusic)
-playback_state (device_id, video_id, position_ms, updated_at)   -- later
+progress    (device_id, video_id, position_ms, watched, updated_at)
 ```
 
 IDs are opaque random 128-bit values (not autoincrement), so they reveal
@@ -160,6 +160,7 @@ display names relative to their root.
 | `GET folders/{id}?cursor=&limit=` | One folder's subfolders and videos, paginated, sorted by name (natural sort). |
 | `GET videos/{id}` | Full metadata: streams, sidecars, duration. |
 | `GET videos/{id}/file` | Direct play: the original bytes, single `Range` support, `ETag`. |
+| `PUT videos/{id}/progress` | Body: `position_ms`, optional `watched`. Saves this device's resume position; folder pages and video details return it as `progress`. |
 | `POST videos/{id}/playback` | Body: client capability profile, preferred audio/subtitle track, start position, max bitrate. Returns a playback plan (§6). |
 | `GET sessions/{sid}/master.m3u8`, `.../{rendition}/index.m3u8`, `.../{seg}.m4s` | HLS for remux/transcode sessions. |
 | `DELETE sessions/{sid}` | Client stops; server kills ffmpeg and frees the cache. |
@@ -440,8 +441,8 @@ M2 and M4 can run in parallel once M1's API is stable.
 
 1. **Where the video widget lives**: in netvideo (`crates/xui-video`,
    proposed at first) or in the xui repo from the start?
-2. **Resume position and watched markers**: in scope for M2 (proposed) or
-   later?
+2. **Resume position and watched markers**: taken in M2, as proposed; the
+   server stores them per device (`PUT videos/{id}/progress`).
 3. **QR pairing**: worth it for M2, or keep code-only pairing until later?
 4. **Remote bandwidth**: should the server offer an adaptive multi-bitrate
    ladder, or one rendition chosen from the client's `max_bitrate`
