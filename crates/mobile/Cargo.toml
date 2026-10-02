@@ -25,3 +25,9 @@ netvideo-client = { path = "../client" }
 serde_json = "1"
 thiserror = "2"
 uniffi = "0.32"
+
+[dev-dependencies]
+axum = "0.8"
+netvideo-server = { path = "../server" }
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "net"] }

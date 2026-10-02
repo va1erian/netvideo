@@ -9,6 +9,10 @@ use crate::error::MobileError;
 /// A small string store that encrypts what it keeps, implemented in Kotlin
 /// on top of an Android Keystore key. Values are device private keys and
 /// tokens, so they must never be written anywhere in clear.
+///
+/// Calls arrive on whichever thread called into [`crate::MobileSession`],
+/// possibly several at once, so implementations must be thread-safe. They
+/// may block (Keystore operations do).
 #[uniffi::export(with_foreign)]
 pub trait SecretVault: Send + Sync {
     /// The value stored under `key`, or `None`.
@@ -34,7 +38,14 @@ impl CredentialStore for VaultStore {
         };
         serde_json::from_str(&text)
             .map(Some)
-            .map_err(|error| ClientError::Store(format!("corrupt credentials: {error}")))
+            // serde's message can quote a stored value (a key or token).
+            .map_err(|error| {
+                ClientError::Store(format!(
+                    "corrupt credentials (line {}, column {})",
+                    error.line(),
+                    error.column()
+                ))
+            })
     }
 
     fn save(&self, server_id: &str, credentials: &Credentials) -> netvideo_client::Result<()> {

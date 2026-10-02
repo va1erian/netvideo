@@ -39,12 +39,20 @@ impl SecretVault for BrokenVault {
     }
 }
 
-const URL: &str = "http://127.0.0.1:9";
+/// A loopback URL nothing listens on: the port was just released.
+fn closed_url() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    format!("http://{}", listener.local_addr().unwrap())
+}
 
 #[test]
-fn an_unpaired_session_never_touches_the_network() {
-    let session = MobileSession::new(URL.into(), Arc::new(MemoryVault::default())).unwrap();
+fn an_unpaired_session_fails_without_credentials() {
+    let session = MobileSession::new(closed_url(), Arc::new(MemoryVault::default())).unwrap();
     assert!(!session.is_paired());
+    assert!(matches!(
+        session.check_server(),
+        Err(MobileError::Network { .. })
+    ));
     assert!(matches!(session.roots(), Err(MobileError::NotPaired)));
     assert!(matches!(
         session.authorization(),
@@ -60,14 +68,15 @@ fn an_unpaired_session_never_touches_the_network() {
 #[test]
 fn stored_credentials_are_read_from_the_vault_and_forgotten() {
     let vault = Arc::new(MemoryVault::default());
-    let id = key();
+    let url = closed_url();
+    let id = key(&url);
     let credentials = format!(
         r#"{{"device_id":"d1","device_name":"tv","secret":"k4.secret.x","token":"t","expires_at":{}}}"#,
         i64::MAX / 2
     );
     vault.write(id.clone(), credentials).unwrap();
 
-    let session = MobileSession::new(URL.into(), vault.clone()).unwrap();
+    let session = MobileSession::new(url, vault.clone()).unwrap();
     assert_eq!(session.device_id().as_deref(), Some("d1"));
     assert_eq!(session.authorization().unwrap(), "Bearer t");
     // The server is unreachable: revocation fails, the local forget does not.
@@ -78,25 +87,27 @@ fn stored_credentials_are_read_from_the_vault_and_forgotten() {
 
 #[test]
 fn vault_failures_surface_as_errors() {
-    let error = MobileSession::new(URL.into(), Arc::new(BrokenVault))
+    let error = MobileSession::new(closed_url(), Arc::new(BrokenVault))
         .err()
         .expect("vault error");
     assert!(error.to_string().contains("keystore locked"), "{error}");
 }
 
 #[test]
-fn corrupt_credentials_are_reported() {
+fn corrupt_credentials_are_reported_without_their_values() {
     let vault = Arc::new(MemoryVault::default());
-    vault.write(key(), "{".into()).unwrap();
-    let error = MobileSession::new(URL.into(), vault)
-        .err()
-        .expect("corrupt");
-    assert!(error.to_string().contains("corrupt credentials"), "{error}");
+    let url = closed_url();
+    let stored = r#"{"device_id":"d","device_name":"n","secret":"k4.secret.x","token":"t","expires_at":"k4.secret.y"}"#;
+    vault.write(key(&url), stored.into()).unwrap();
+    let error = MobileSession::new(url, vault).err().expect("corrupt");
+    let text = error.to_string();
+    assert!(text.contains("corrupt credentials"), "{text}");
+    assert!(!text.contains("k4.secret"), "{text}");
 }
 
 /// The vault key a session uses: its endpoint id.
-fn key() -> String {
-    netvideo_client::ServerEndpoint::new("server", URL)
+fn key(url: &str) -> String {
+    netvideo_client::ServerEndpoint::new("server", url)
         .unwrap()
         .id
 }

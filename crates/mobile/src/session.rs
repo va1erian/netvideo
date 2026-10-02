@@ -20,7 +20,8 @@ pub struct MobileSession {
 #[uniffi::export]
 impl MobileSession {
     /// A session for the server at `url` (`https://…`; `http://` only for a
-    /// LAN debug build), keeping credentials in `vault`.
+    /// LAN debug build), keeping credentials in `vault`. Blocks while the
+    /// vault is read, so call it off the main thread.
     #[uniffi::constructor]
     pub fn new(url: String, vault: Arc<dyn SecretVault>) -> Result<Arc<Self>, MobileError> {
         let endpoint = ServerEndpoint::new("server", &url)?;
@@ -31,6 +32,13 @@ impl MobileSession {
     /// The normalized server URL.
     pub fn url(&self) -> String {
         self.session.endpoint().url.clone()
+    }
+
+    /// Checks that a netvideo server answers at this URL, before the user
+    /// spends a one-time pairing code on it.
+    pub fn check_server(&self) -> Result<(), MobileError> {
+        self.session.client().health()?;
+        Ok(())
     }
 
     /// This device's id on the server, when paired.
