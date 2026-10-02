@@ -39,23 +39,31 @@ Out of scope:
 
 ## Pairing
 
-- `netvideo-server pair` prints a 6-digit, single-use code that is valid for
-  `pairing_code_ttl_secs` (default 300 s, at most 3600 s).
+- Pairing codes have 6 digits and are single-use.
+  - `netvideo-server pair` prints one valid for `--ttl` seconds (default 600,
+    capped at 3600).
+  - Codes minted through the API are valid for `pairing_code_ttl_secs`
+    (default 600, at most 3600). An admin may mint 10 per minute per IP.
 - The database stores only an HMAC of each code, keyed by the server secret.
   A leaked database therefore does not reveal live codes.
 - Wrong, used and expired codes all get the same 401, so a guesser learns
   nothing from the response.
 - Guessing is rate limited at three levels:
-  - per client IP, with IPv6 clients grouped by /64;
+  - per client IP, `max_pairing_attempts_per_min` attempts (default 3,
+    successes included), with IPv6 clients grouped by /64;
   - globally, at 30 failed attempts per minute across all clients, which
-    bounds a distributed guess against the 10⁶ code space;
-  - fail closed: if the limiter's table is full, requests are refused, not
-    let through.
+    bounds a distributed guess against the 10⁶ code space. The trade-off is
+    that a guesser can block pairing for everyone for a minute at a time;
+    already paired devices are unaffected;
+  - while the limiter's table is full (4096 tracked clients), new client
+    addresses are refused rather than let through.
 - The device generates its own Ed25519 key and sends only the public half.
   The server never sees a device private key.
 - **(planned, M2)** A QR pairing code will also carry the server URL and the
   fingerprint of the server's public key. The client then rejects a token
   signed by any other key, which defeats a man-in-the-middle during pairing.
+- The HMAC key is the server's signing key, so pairing adds no secret of its
+  own to protect.
 
 ## Tokens and devices
 
@@ -74,12 +82,14 @@ Out of scope:
   - Listing devices, minting codes, revoking devices and starting scans all
     require an admin. A viewer gets 403.
 - The server key is generated on first start and stored as
-  `<data_dir>/server.key`, mode 0600, outside the database.
+  `<data_dir>/server.key`, created with mode 0600 and kept outside the
+  database. It shares the data volume with the database, so a backup of
+  that volume holds both and must be protected like the key.
 
 ## Network edge
 
 - `X-Forwarded-For` is honoured only when the direct peer is inside
-  `trusted_proxies` (the Cosmos bridge). Otherwise the peer address is the
+  `trusted_proxies`. Otherwise the peer address is the
   client address, so a client cannot spoof its IP to escape rate limits.
 - TLS is terminated by Cosmos, or by the server itself when
   `tls_cert`/`tls_key` are set. Configuring only one of the two is rejected
@@ -89,8 +99,8 @@ Out of scope:
   file and a socket, and a client that stops reading holds both, so without
   these limits one device or stolen token could exhaust the server's file
   descriptors. The compose file also raises `nofile` to 8192.
-- Request bodies are capped at `max_body_bytes`, and unknown JSON fields and
-  unknown query parameters are rejected.
+- Request bodies are capped at `max_body_bytes` (default 64 KiB, at most
+  1 MiB). Folder listings reject unknown query parameters.
 - **(planned, M2)** The Android client will refuse cleartext traffic, except
   in explicit LAN debug builds.
 - **No secrets in URLs.** Tokens travel only in the `Authorization` header.
@@ -102,15 +112,18 @@ Out of scope:
 Clients only ever name database ids. They never name paths.
 
 - **Scanning.**
-  - Library roots must be absolute paths, and each may be listed only once.
+  - Library roots must be absolute paths, and each path may be listed only
+    once (compared as written, so two spellings of one directory are not
+    caught).
   - The walker does not follow symlinks and skips hidden entries, including
     names that are not valid UTF-8. Other paths that are not valid UTF-8
     cannot be shown by the API and are skipped with a warning.
   - A root that is unreachable, or only partly readable, never causes rows to
     be pruned, so a flaky mount cannot wipe the library. A folder (or the
     root) that now has no entries at all, while the database still knows
-    videos under it, is treated the same way, because an unmounted share or
-    a missing bind mount looks exactly like an empty directory. A folder that still holds
+    videos under it, keeps the rows beneath it, because an unmounted share
+    or a missing bind mount looks exactly like an empty directory. The rest
+    of the root is scanned and pruned normally. A folder that still holds
     anything (subtitles, posters, hidden files) is pruned as usual, and so
     is a folder deleted outright. To retire videos on purpose, delete their
     folder rather than just emptying it.
@@ -126,7 +139,9 @@ Clients only ever name database ids. They never name paths.
     audit log. A plain missing file is not logged as an attack.
   - The file is opened non-blocking, so a FIFO swapped in cannot hang the
     server, and only once. The open handle's real location is checked
-    again (`/proc/self/fd` on Linux) before any byte is read. Metadata and
+    again through `/proc/self/fd` before any byte is read. (Off Linux, which
+    is for development only, the path is re-resolved instead; that narrows
+    the race but does not close it.) Metadata and
     content both come from that handle, so a directory swapped for a symlink
     after resolution cannot leak files from outside the root.
 
@@ -146,11 +161,13 @@ Clients only ever name database ids. They never name paths.
 - At most two probes run at once, which keeps the N150 usable during a scan.
 - A file ffprobe fails on is marked, and is only probed again once its size
   or mtime changes. A hostile file therefore costs one probe, not one per
-  scan.
+  scan. A broken ffprobe install that cannot print its version marks
+  nothing, and a transient start failure (EMFILE, EAGAIN) is retried on the
+  next scan.
 - The probe's memory is not limited per process. The compose file's
   `mem_limit` bounds the container instead, so a runaway ffprobe gets the
   container OOM-killed and restarted rather than starving the host.
-- Output is parsed into strict serde types, free-form strings are capped at
+- Output is parsed into fixed serde types, free-form strings are capped at
   200 characters, and nothing from a probe is ever put back on a command
   line.
 - **(planned, M3)** Transcoding ffmpeg processes will get the same treatment,
@@ -159,51 +176,75 @@ Clients only ever name database ids. They never name paths.
 
 ## Residual risks
 
-These would need write access to the media, which only the owner's other
-machines have, or are accepted for now:
+Known gaps, with the most serious first. The first is planned for M3; the
+others are being fixed in the next server PR, which updates this list.
 
-- A broken ffprobe install that cannot even print its version is treated as
-  missing, so it does not mark the library unreadable. A transient start
-  failure (EMFILE, EAGAIN) is retried on the next scan.
+- **ffprobe runs as the server's user.** It can read the data directory,
+  including `server.key`. A parser exploit in ffprobe, triggered by a
+  hostile media file, could steal the signing key and mint tokens for any
+  device. M3 runs ffprobe and ffmpeg sandboxed away from the data
+  directory.
+- **The global pairing budget is soft.** It is checked when a request
+  arrives but only charged when the attempt fails, so a concurrent burst
+  from many addresses can make more than 30 guesses in a minute.
+- **Refresh proofs are replayable.** The server does not cap a proof's
+  lifetime or remember used proofs, so a captured token and proof pair can
+  be refreshed again while both are valid. A refresh does not revoke the
+  old token either.
+- **IPv4 clients on a dual-stack listener.** With `host = "::"`, IPv4 peers
+  arrive as `::ffff:a.b.c.d` and do not match IPv4 entries in
+  `trusted_proxies`.
+- **The example compose file trusts `172.16.0.0/12`**, every default Docker
+  bridge. Any container on the host could then set `X-Forwarded-For`.
+  Narrow it to the Cosmos network's subnet.
+- **No connection timeouts.** There is no request, header or idle timeout,
+  so slow clients and idle keep-alive connections are bounded only by file
+  descriptors. Stream limits bound open streams, not connections.
+- **Pairing and refresh bodies accept unknown fields**, and endpoints
+  without query parameters ignore any query string.
+
+Accepted, or needing write access to the media, which only the owner's
+other machines have:
+
 - ffprobe opens the walked path directly. A directory swapped for a symlink
   between the walk and the probe could let ffprobe read metadata from
   outside the root. Serving is not affected, because it re-checks the
   opened handle.
 - Revoking a device stops new requests at once, but a stream that is
   already open runs until the client closes it, at most 4 per device.
-- There is no idle timeout on a stream yet; the stream limits bound how
-  many can be held open.
 
 ## Container
 
 - The container runs as uid 10001 with a read-only root filesystem,
   `cap_drop: ALL` and `no-new-privileges`.
-- The media is mounted read-only. The only writable volume is the data
-  directory (database, server key, logs).
-- The port is `expose`d to the Cosmos network only and not published on the
-  host.
+- The media is mounted read-only. The writable paths are the data
+  directory (database, server key, logs) and a tmpfs at `/tmp`.
+- The port is not published on the host. It is reachable from containers
+  on the same Docker network, which Cosmos must join.
 
 ## Audit log
 
 - `<data_dir>/audit.log.<date>` (one file per day) records JSON lines for:
   - pairing successes and failures;
   - token refreshes;
-  - revocations;
-  - authentication failures;
-  - rate-limit hits;
+  - revocations through the API (the CLI `pair`, `revoke` and `devices`
+    commands are not audited yet);
+  - authentication failures, including a viewer refused an admin action;
+  - pairing rate-limit hits (stream-limit refusals are not logged);
   - path escapes;
   - finished scans.
 - `RUST_LOG` filters only the console output. The audit log always records
   security events.
+- Old files are not deleted; prune them with the host's log rotation.
 
 ## Supply chain
 
 - CI runs `cargo fmt`, `clippy -D warnings` and the tests with `--locked`,
-  plus RustSec `audit-check` for known-vulnerable or yanked dependencies.
+  plus RustSec `audit-check`, which fails on known-vulnerable dependencies.
+  It runs on pushes and pull requests only, not on a schedule.
 - **(planned)** `cargo deny` for licences and sources, pinned image digests,
   and Dependabot.
 
 ## Reporting a problem
 
-Open a private security advisory on the GitHub repository rather than a
-public issue.
+Report it privately to the owner rather than in a public issue.
