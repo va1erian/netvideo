@@ -228,7 +228,6 @@ impl Scanner {
     }
 }
 
-/// Whether a found video needs its row written or its metadata read.
 /// Known videos the walk did not see, under a folder that still exists but
 /// has no entries at all. An unmounted share or a missing bind mount looks
 /// exactly like that, at the root or deeper, and pruning would delete every
@@ -256,8 +255,8 @@ pub(crate) fn ancestors(rel: &str) -> impl Iterator<Item = &str> {
     })
 }
 
-/// New or changed files need a write; unchanged ones only when they were
-/// never probed. A file ffprobe already failed on waits until it changes.
+/// Whether a found video needs its row written or its metadata read: new or
+/// changed files always, unchanged ones only when they were never probed. A file ffprobe already failed on waits until it changes.
 fn needs_write(video: &FoundVideo, known: Option<&KnownVideo>) -> bool {
     known.is_none_or(|known| !is_unchanged(video, known) || (!known.probed && !known.probe_failed))
 }
