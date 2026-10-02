@@ -220,7 +220,7 @@ Improved over emusic:
 - **Supply chain.** `cargo deny` (advisories, licenses, sources) and
   `cargo audit` in CI; pinned image digests; Dependabot.
 
-A `docs/security.md` will hold the full model, written alongside milestone 1.
+[security.md](security.md) holds the full model as built.
 
 ## 6. Playback and transcoding
 
@@ -304,10 +304,11 @@ default path, not an option:
 - Spawned with an argument vector, never a shell; inputs passed as
   `file:/absolute/jailed/path` so a filename can never be read as a protocol
   or option.
-- `-protocol_whitelist file` and `-nostdin`; no network access for ffmpeg.
+- `-protocol_whitelist file`, so no network access. ffmpeg also gets
+  `-nostdin`; ffprobe has no such flag, so its stdin is closed instead.
 - Runs under the same unprivileged uid, with the media mount read-only and
-  only its session directory writable; CPU/memory capped by the container's
-  limits plus per-process `RLIMIT`s and a wall-clock watchdog for ffprobe.
+  only its session directory writable. ffprobe gets a wall-clock watchdog and
+  the container's memory limit; transcoding ffmpeg adds per-process `RLIMIT`s.
 - ffprobe output is parsed with serde into strict types; unknown values are
   ignored, never interpolated into later command lines unescaped.
 

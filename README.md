@@ -8,7 +8,8 @@ lay it out. Clients pair with a one-time code and stream from anywhere.
 - **Clients**: Android (Kotlin) and an XUI desktop app for Windows and macOS
   (planned).
 
-See [docs/PLAN.md](docs/PLAN.md) for the design and milestones and
+See [docs/PLAN.md](docs/PLAN.md) for the design and milestones,
+[docs/security.md](docs/security.md) for the security model and
 [AGENTS.md](AGENTS.md) for contributor rules.
 
 ## Running the server
