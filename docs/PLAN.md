@@ -197,8 +197,8 @@ Kept from emusic:
 Improved over emusic:
 
 - **Roles.** Today any paired emusic device can mint pairing codes and revoke
-  others. netvideo adds an `admin` flag per device: the first device paired
-  from the CLI is admin; codes minted by a device produce viewer devices
+  others. netvideo adds an `admin` flag per device: devices paired from a
+  CLI code are admins unless it was minted with `--viewer`; codes minted by a device produce viewer devices
   unless the admin asks otherwise. Device management needs `admin`.
 - **Pairing that resists a hostile network.** The pairing code can be shown
   as a QR code (`netvideo-server pair --qr`) that also carries the server URL
@@ -220,7 +220,7 @@ Improved over emusic:
 - **Supply chain.** `cargo deny` (advisories, licenses, sources) and
   `cargo audit` in CI; pinned image digests; Dependabot.
 
-A `docs/security.md` will hold the full model, written alongside milestone 1.
+[security.md](security.md) holds the full model as built.
 
 ## 6. Playback and transcoding
 
@@ -302,12 +302,13 @@ default path, not an option:
 ### 6.4 ffmpeg containment
 
 - Spawned with an argument vector, never a shell; inputs passed as
-  `file:/absolute/jailed/path` so a filename can never be read as a protocol
+  `file:/absolute/path` (a path the walker or the path jail produced) so a filename can never be read as a protocol
   or option.
-- `-protocol_whitelist file` and `-nostdin`; no network access for ffmpeg.
+- `-protocol_whitelist file`, so no network access. ffmpeg also gets
+  `-nostdin`; ffprobe has no such flag, so its stdin is closed instead.
 - Runs under the same unprivileged uid, with the media mount read-only and
-  only its session directory writable; CPU/memory capped by the container's
-  limits plus per-process `RLIMIT`s and a wall-clock watchdog for ffprobe.
+  only its session directory writable. ffprobe gets a wall-clock watchdog and
+  the container's memory limit; transcoding ffmpeg adds per-process `RLIMIT`s.
 - ffprobe output is parsed with serde into strict types; unknown values are
   ignored, never interpolated into later command lines unescaped.
 
