@@ -1,0 +1,21 @@
+# Example netvideo-server configuration. Every key can also be set with a
+# `NETVIDEO_*` environment variable (e.g. `NETVIDEO_PORT=8080`).
+
+[server]
+host = "0.0.0.0"
+port = 8080
+data_dir = "/var/lib/netvideo"
+# Only these peers may set X-Forwarded-For (the Cosmos Cloud network).
+trusted_proxies = ["172.16.0.0/12", "127.0.0.1"]
+
+[security]
+# Leave both empty behind a TLS-terminating proxy.
+tls_cert = ""
+tls_key = ""
+token_ttl_hours = 168
+max_pairing_attempts_per_min = 3
+pairing_code_ttl_secs = 600
+
+[library]
+paths = ["/media/videos"]
+scan_interval_secs = 3600

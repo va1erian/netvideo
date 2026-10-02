@@ -1,0 +1,39 @@
+# netvideo-server behind Cosmos Cloud.
+#
+# Cosmos Cloud terminates TLS and routes https://video.homelab.net to the
+# internal port 8080; netvideo-server runs plain HTTP inside the bridge network.
+#
+# First pairing (admin device):
+#   docker exec -it netvideo-server netvideo-server pair
+
+services:
+  netvideo-server:
+    build: { context: .., dockerfile: deploy/Dockerfile }
+    container_name: netvideo-server
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - RUST_LOG=info,netvideo_server=debug
+      - NETVIDEO_LIBRARY_PATHS=/media/videos
+      - NETVIDEO_TRUSTED_PROXIES=172.16.0.0/12,127.0.0.1
+    volumes:
+      # Videos are mounted read-only: the server never writes to the library.
+      - /path/to/videos:/media/videos:ro
+      # A named volume is pre-owned by the image's uid 10001. For a bind mount
+      # instead, first `mkdir -p /path/to/data && chown 10001:10001 /path/to/data`.
+      - netvideo-data:/var/lib/netvideo
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    labels:
+      - "cosmos-cloud.enabled=true"
+      - "cosmos-cloud.domain=video.homelab.net"
+      - "cosmos-cloud.target-port=8080"
+
+volumes:
+  netvideo-data:

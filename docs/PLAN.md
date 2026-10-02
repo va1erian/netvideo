@@ -82,8 +82,7 @@ Android project, mirroring emusic:
 
 The emusic-server crate is mostly standalone (its only workspace dependency is
 the SID renderer), so the plan is to **copy and adapt** the generic modules
-into netvideo rather than share a crate across repos for now. Extracting a
-shared `homelab-auth` crate is listed as an open question (§11).
+into netvideo rather than share a crate across repos for now (decided, §11).
 
 | emusic source | Use in netvideo |
 |---|---|
@@ -433,17 +432,16 @@ M2 and M4 can run in parallel once M1's API is stable.
 - **Server hardware**: Intel N150, so jellyfin-ffmpeg with QSV/VAAPI is the
   default transcoding path (§6.3).
 - **Accounts**: one owner, many devices; watch progress is per device.
+- **Code from emusic**: copied and adapted into this repo. Extracting a shared
+  auth crate can be revisited once netvideo's auth changes settle (after M2).
 
 ## 12. Open questions
 
-1. **Shared code with emusic**: copy and adapt (proposed, simplest now), or
-   extract the auth/pairing/security modules into a shared crate both servers
-   depend on? Sharing avoids fixing security bugs twice but couples the repos.
-2. **Where the video widget lives**: in netvideo (`crates/xui-video`,
+1. **Where the video widget lives**: in netvideo (`crates/xui-video`,
    proposed at first) or in the xui repo from the start?
-3. **Resume position and watched markers**: in scope for M2 (proposed) or
+2. **Resume position and watched markers**: in scope for M2 (proposed) or
    later?
-4. **QR pairing**: worth it for M2, or keep code-only pairing until later?
-5. **Remote bandwidth**: should the server offer an adaptive multi-bitrate
+3. **QR pairing**: worth it for M2, or keep code-only pairing until later?
+4. **Remote bandwidth**: should the server offer an adaptive multi-bitrate
    ladder, or one rendition chosen from the client's `max_bitrate`
    (proposed, simpler)?
