@@ -41,3 +41,12 @@ cargo test --workspace
 ```
 
 Do not submit work with failing or skipped checks.
+
+When the change touches `android/` or what it builds on (`crates/mobile`, `crates/client`), also build the app and run its unit tests (needs the Android SDK, NDK 27 and `cargo install cargo-ndk`):
+
+```
+cd android
+./gradlew :app:assembleDebug :app:lintDebug :app:testDebugUnitTest
+```
+
+The Android workflow runs the same on every PR that touches those paths.
