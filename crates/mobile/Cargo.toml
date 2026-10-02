@@ -1,0 +1,27 @@
+[package]
+name = "netvideo-mobile"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Android bindings over netvideo-client, exposed through uniffi"
+
+[lib]
+name = "netvideo_mobile"
+path = "src/lib.rs"
+crate-type = ["cdylib", "lib"]
+
+# Generates the Kotlin bindings. Only built with `--features cli`; the
+# shipped library must not pull the bindgen CLI into the Android package.
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["cli"]
+
+[features]
+cli = ["uniffi/cli"]
+
+[dependencies]
+netvideo-client = { path = "../client" }
+serde_json = "1"
+thiserror = "2"
+uniffi = "0.32"
