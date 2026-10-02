@@ -210,9 +210,11 @@ Improved over emusic:
   by an Android Keystore key (non-exportable, hardware-backed where
   available) instead of a plain 0600 file. Windows uses DPAPI, macOS the
   Keychain.
-- **No cleartext.** The Android manifest drops `usesCleartextTraffic`; a
-  network security config allows cleartext only for explicit LAN-debug
-  builds.
+- **No cleartext.** The Android manifest sets `usesCleartextTraffic` to
+  false and only debug builds override it, for LAN testing. The Rust core
+  opens its own sockets, which that setting does not cover, so the app
+  refuses `http://` server addresses whenever the platform policy forbids
+  cleartext.
 - **ffmpeg containment** (§6.4).
 - **No secrets in URLs.** Media3 and the desktop player both send the
   `Authorization` header on every segment request, so HLS URLs carry no

@@ -1,0 +1,4 @@
+-keep class uniffi.** { *; }
+-keep class com.sun.jna.** { *; }
+-keep class * extends com.sun.jna.Library { *; }
+-keep class * extends com.sun.jna.Structure { *; }
