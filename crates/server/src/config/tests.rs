@@ -47,6 +47,7 @@ max_body_bytes = 4096
 [library]
 paths = ["/media/videos", "/media/films"]
 scan_interval_secs = 600
+ffprobe_path = "/usr/bin/ffprobe"
 "#;
     let config = Config::from_toml(text).expect("parse");
     config.validate().expect("valid");
@@ -165,4 +166,15 @@ fn hostnames_are_rejected_as_listen_hosts() {
     assert!(config.validate().is_err());
     config.server.host = "::".into();
     config.validate().expect("IPv6 literal is valid");
+}
+
+#[test]
+fn library_paths_must_be_absolute_and_unique() {
+    let mut config = Config::from_toml(MINIMAL).expect("parse");
+    config.library.paths = vec!["media/videos".into()];
+    assert!(config.validate().is_err());
+    config.library.paths = vec!["/media/videos".into(), "/media/videos/".into()];
+    assert!(config.validate().is_err());
+    config.library.paths = vec!["/media/videos".into(), "/media/films".into()];
+    config.validate().expect("valid");
 }

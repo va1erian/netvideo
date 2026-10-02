@@ -19,3 +19,5 @@ pairing_code_ttl_secs = 600
 [library]
 paths = ["/media/videos"]
 scan_interval_secs = 3600
+# ffprobe binary used to read video metadata (env: NETVIDEO_FFPROBE).
+ffprobe_path = "ffprobe"

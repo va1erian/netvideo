@@ -24,9 +24,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # ffmpeg/ffprobe let the scanner tests run against real media.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+        env:
+          NETVIDEO_REQUIRE_FFMPEG: "1"
 
   # Known-vulnerable or yanked dependencies fail the build.
   audit:

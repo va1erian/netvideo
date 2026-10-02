@@ -16,6 +16,7 @@ See [docs/PLAN.md](docs/PLAN.md) for the design and milestones and
 ```bash
 export NETVIDEO_LIBRARY_PATHS=/path/to/videos
 export NETVIDEO_DATA_DIR=./data
+export NETVIDEO_FFPROBE=ffprobe              # optional; videos are indexed unprobed without it
 cargo run -p netvideo-server -- serve
 cargo run -p netvideo-server -- pair      # one-time code for an admin device
 cargo run -p netvideo-server -- devices   # list paired devices

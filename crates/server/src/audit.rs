@@ -97,3 +97,17 @@ pub fn path_violation(client_ip: &str, device_id: &str, video_id: &str) {
 pub fn rate_limited(client_ip: &str, scope: &str) {
     tracing::warn!(target: AUDIT_TARGET, event = "rate_limited", client_ip, scope);
 }
+
+/// A library scan finished.
+pub fn scan_finished(stats: &crate::scanner::ScanStats, elapsed_ms: u64) {
+    tracing::info!(
+        target: AUDIT_TARGET,
+        event = "scan_finished",
+        videos_found = stats.videos_found,
+        written = stats.written,
+        removed = stats.removed,
+        probe_failures = stats.probe_failures,
+        partial = stats.partial,
+        elapsed_ms
+    );
+}
