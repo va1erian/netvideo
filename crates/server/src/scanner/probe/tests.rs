@@ -89,3 +89,40 @@ async fn a_missing_program_is_reported_as_unavailable() {
         .unwrap_err();
     assert!(matches!(error, ProbeError::Unavailable(_)));
 }
+
+#[cfg(unix)]
+fn shell(script: &str) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new("sh");
+    command.args(["-c", script]);
+    command
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn endless_output_is_cut_off_at_the_cap() {
+    let error = run_capped(shell("exec yes"), Duration::from_secs(10))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, ProbeError::Failed(ref why) if why == "output too large"),
+        "{error}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_hung_program_times_out() {
+    let error = run_capped(shell("exec sleep 30"), Duration::from_millis(100))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, ProbeError::Failed(ref why) if why == "timed out"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_failing_program_is_a_failed_probe() {
+    let error = run_capped(shell("echo '{}'; exit 1"), Duration::from_secs(10))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, ProbeError::Failed(_)));
+}

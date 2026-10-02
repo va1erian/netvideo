@@ -10,6 +10,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use serde::Deserialize;
+use tokio::io::AsyncReadExt;
 
 use crate::db::models::{ProbeInfo, StreamInfo, StreamKind};
 
@@ -56,25 +57,52 @@ pub fn probe_args(path: &Path) -> Vec<std::ffi::OsString> {
 
 /// Probes `path` with the ffprobe executable at `program`.
 pub async fn probe(program: &Path, path: &Path) -> Result<ProbeInfo, ProbeError> {
-    let child = tokio::process::Command::new(program)
-        .args(probe_args(path))
+    let mut command = tokio::process::Command::new(program);
+    command.args(probe_args(path));
+    parse(&run_capped(command, PROBE_TIMEOUT).await?)
+}
+
+/// Runs `command` and returns its stdout, failing when it times out, exits
+/// unsuccessfully or prints more than [`MAX_OUTPUT_BYTES`]. The child is
+/// killed on every early return.
+pub(crate) async fn run_capped(
+    mut command: tokio::process::Command,
+    timeout: Duration,
+) -> Result<Vec<u8>, ProbeError> {
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn()
         .map_err(ProbeError::Unavailable)?;
-    let output = tokio::time::timeout(PROBE_TIMEOUT, child.wait_with_output())
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| ProbeError::Failed("no stdout".into()))?;
+    let run = async {
+        // Read at most one byte past the cap, so oversized output is detected
+        // without ever buffering it.
+        let mut output = Vec::new();
+        stdout
+            .take(MAX_OUTPUT_BYTES as u64 + 1)
+            .read_to_end(&mut output)
+            .await?;
+        if output.len() > MAX_OUTPUT_BYTES {
+            return Ok((None, output));
+        }
+        Ok::<_, std::io::Error>((Some(child.wait().await?), output))
+    };
+    let (status, output) = tokio::time::timeout(timeout, run)
         .await
         .map_err(|_| ProbeError::Failed("timed out".into()))?
         .map_err(|error| ProbeError::Failed(error.to_string()))?;
-    if !output.status.success() {
-        return Err(ProbeError::Failed(format!("exit status {}", output.status)));
+    // `None` means the cap was hit; dropping the child kills it.
+    let status = status.ok_or_else(|| ProbeError::Failed("output too large".into()))?;
+    if !status.success() {
+        return Err(ProbeError::Failed(status.to_string()));
     }
-    if output.stdout.len() > MAX_OUTPUT_BYTES {
-        return Err(ProbeError::Failed("output too large".into()));
-    }
-    parse(&output.stdout)
+    Ok(output)
 }
 
 /// Parses ffprobe's JSON output.
