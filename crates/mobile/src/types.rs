@@ -2,6 +2,27 @@
 
 use netvideo_client::types as client;
 
+/// A scanned pairing QR code.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PairingLink {
+    /// The server's normalized base URL.
+    pub url: String,
+    /// The one-time pairing code.
+    pub code: String,
+    /// The fingerprint the server's key must match.
+    pub key_fingerprint: String,
+}
+
+impl From<netvideo_client::PairingLink> for PairingLink {
+    fn from(link: netvideo_client::PairingLink) -> Self {
+        Self {
+            url: link.url,
+            code: link.code,
+            key_fingerprint: link.key_fingerprint,
+        }
+    }
+}
+
 /// A folder as listed by the browse API.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct FolderRef {

@@ -133,6 +133,9 @@ pub struct PairResponse {
     pub auth_token: String,
     /// Token expiry (Unix seconds).
     pub expires_at: i64,
+    /// The server's PASERK public key.
+    #[serde(default)]
+    pub server_key: Option<String>,
 }
 
 /// Response of `POST /api/v1/auth/refresh`.
@@ -142,6 +145,9 @@ pub struct TokenResponse {
     pub auth_token: String,
     /// Expiry (Unix seconds).
     pub expires_at: i64,
+    /// The server's PASERK public key.
+    #[serde(default)]
+    pub server_key: Option<String>,
 }
 
 /// Response of `GET /api/v1/health`.

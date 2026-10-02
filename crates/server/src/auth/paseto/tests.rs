@@ -16,7 +16,13 @@ fn server() -> ServerKey {
 #[test]
 fn access_token_round_trips() {
     let key = server();
-    let issued = issue_access_token(&key, "device-1", Duration::from_secs(3600)).unwrap();
+    let issued = issue_access_token(
+        &key,
+        "device-1",
+        "k4.public.test",
+        Duration::from_secs(3600),
+    )
+    .unwrap();
     let verified = verify_access_token(&key, &issued.token).unwrap();
     assert_eq!(verified.device_id, "device-1");
     assert!(!verified.token_id.is_empty());
@@ -27,14 +33,26 @@ fn access_token_round_trips() {
 fn access_token_signed_by_another_server_is_rejected() {
     let key = server();
     let other = server();
-    let issued = issue_access_token(&key, "device-1", Duration::from_secs(3600)).unwrap();
+    let issued = issue_access_token(
+        &key,
+        "device-1",
+        "k4.public.test",
+        Duration::from_secs(3600),
+    )
+    .unwrap();
     assert!(verify_access_token(&other, &issued.token).is_err());
 }
 
 #[test]
 fn tampered_token_is_rejected() {
     let key = server();
-    let issued = issue_access_token(&key, "device-1", Duration::from_secs(3600)).unwrap();
+    let issued = issue_access_token(
+        &key,
+        "device-1",
+        "k4.public.test",
+        Duration::from_secs(3600),
+    )
+    .unwrap();
     let mut bytes = issued.token.into_bytes();
     let last = bytes.len() - 1;
     bytes[last] = if bytes[last] == b'A' { b'B' } else { b'A' };

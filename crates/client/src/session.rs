@@ -67,14 +67,40 @@ impl Session {
             .map(|c| c.device_id.clone())
     }
 
+    /// Pairs with a typed one-time code; see [`Session::pair_pinned`].
+    pub fn pair(&self, pairing_code: &str, device_name: &str) -> Result<String> {
+        self.pair_pinned(pairing_code, device_name, None)
+    }
+
     /// Pairs with a one-time code, generating a fresh device key, and
     /// stores the credentials. Returns the new device id.
-    pub fn pair(&self, pairing_code: &str, device_name: &str) -> Result<String> {
+    ///
+    /// The server's key is pinned: with `key_fingerprint` (from a pairing QR
+    /// code) it must match, and the first token must be signed by it, for
+    /// this device and this device's key. Every later token is checked the
+    /// same way. A mismatch stores nothing and fails with
+    /// [`ClientError::ServerKey`].
+    pub fn pair_pinned(
+        &self,
+        pairing_code: &str,
+        device_name: &str,
+        key_fingerprint: Option<&str>,
+    ) -> Result<String> {
         let (secret, public) = auth::generate_keypair()?;
         let public = auth::public_key_paserk(&public)?;
         let paired = self
             .client
             .pair(pairing_code.trim(), device_name, &public)?;
+        let server_key = paired.server_key.clone().ok_or(ClientError::ServerKey)?;
+        if key_fingerprint.is_some_and(|fp| auth::server_key_fingerprint(&server_key) != fp) {
+            return Err(ClientError::ServerKey);
+        }
+        auth::verify_issued_token(
+            &server_key,
+            &paired.auth_token,
+            &paired.device_id,
+            &auth::device_key_fingerprint(&public),
+        )?;
         let credentials = Credentials {
             device_id: paired.device_id.clone(),
             device_name: paired.device_name,
@@ -82,6 +108,7 @@ impl Session {
             token: paired.auth_token,
             lifetime_secs: paired.expires_at - unix_now(),
             expires_at: paired.expires_at,
+            server_key: Some(server_key),
         };
         let mut guard = lock(&self.credentials);
         self.store.save(&self.endpoint.id, &credentials)?;
@@ -93,8 +120,9 @@ impl Session {
     ///
     /// A failed refresh is not fatal while the current token is still
     /// valid: it is returned and the refresh is retried on a later call.
-    /// Only an expired token (which the server would reject anyway) or a
-    /// missing pairing is an error.
+    /// Only an expired token (which the server would reject anyway), a
+    /// missing pairing, or a renewed token the pinned server key did not
+    /// issue to this device ([`ClientError::ServerKey`]) is an error.
     pub fn token(&self) -> Result<String> {
         let current = self.current()?;
         if !needs_refresh(&current, unix_now()) {
@@ -112,7 +140,10 @@ impl Session {
         }
         match self.refresh(&current) {
             Ok(token) => Ok(token),
-            Err(ClientError::NotPaired) => Err(ClientError::NotPaired),
+            // A token the pinned key did not issue means an impostor is
+            // answering: stop talking to it rather than keep sending it the
+            // current token.
+            Err(error @ (ClientError::NotPaired | ClientError::ServerKey)) => Err(error),
             Err(_) => Ok(current.token),
         }
     }
@@ -124,6 +155,18 @@ impl Session {
         let proof =
             auth::issue_refresh_proof(&current.secret_key()?, &fingerprint, PROOF_TTL, PROOF_SKEW)?;
         let renewed = self.client.refresh(&current.token, &proof)?;
+        // Credentials from before pinning pin the key the server sends now.
+        let server_key = current
+            .server_key
+            .clone()
+            .or(renewed.server_key)
+            .ok_or(ClientError::ServerKey)?;
+        auth::verify_issued_token(
+            &server_key,
+            &renewed.auth_token,
+            &current.device_id,
+            &auth::own_device_key_fingerprint(&current.secret_key()?)?,
+        )?;
         let mut guard = lock(&self.credentials);
         let still_current = guard
             .as_ref()
@@ -132,6 +175,7 @@ impl Session {
             return Err(ClientError::NotPaired);
         }
         let mut updated = current.clone();
+        updated.server_key = Some(server_key);
         updated.lifetime_secs = renewed.expires_at - unix_now();
         updated.token = renewed.auth_token;
         updated.expires_at = renewed.expires_at;

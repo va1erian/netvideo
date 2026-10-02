@@ -30,6 +30,10 @@ pub struct Credentials {
     /// The token's lifetime when it was issued, in seconds (0 if unknown).
     #[serde(default)]
     pub lifetime_secs: i64,
+    /// The server's PASERK public key, pinned at pairing: every token the
+    /// server issues later must be signed by it.
+    #[serde(default)]
+    pub server_key: Option<String>,
 }
 
 impl std::fmt::Debug for Credentials {
@@ -207,6 +211,7 @@ mod tests {
             token: "v4.public.xyz".into(),
             expires_at: 2_000,
             lifetime_secs: 1_000,
+            server_key: None,
         }
     }
 

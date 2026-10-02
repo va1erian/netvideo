@@ -31,6 +31,11 @@ pub const MAX_REFRESH_PROOF_LIFETIME: Duration = Duration::from_secs(600);
 /// proof's `iat` and `exp`, since clients backdate `iat`.
 pub const MAX_REFRESH_PROOF_SKEW: Duration = Duration::from_secs(300);
 
+/// Custom claim carrying the fingerprint of the device key a token was
+/// issued for, so a client can tell a token minted for its own key from one
+/// a man-in-the-middle obtained for a substituted key.
+pub const DEVICE_KEY_CLAIM: &str = "device_key";
+
 /// Access-token scope claim value.
 pub const SCOPE_LIBRARY: &str = "library:read stream:read";
 
@@ -62,8 +67,20 @@ pub struct VerifiedAccess {
     pub expires_at: i64,
 }
 
-/// Issues an access token for `device_id`, valid for `ttl`.
-pub fn issue_access_token(key: &ServerKey, device_id: &str, ttl: Duration) -> Result<IssuedToken> {
+/// The fingerprint of a device's PASERK `k4.public` key, as carried in
+/// [`DEVICE_KEY_CLAIM`]. Clients compute the same value.
+pub fn device_key_fingerprint(public_paserk: &str) -> String {
+    crate::util::sha256_hex(b"netvideo/device-key/v1:", public_paserk.as_bytes())
+}
+
+/// Issues an access token for `device_id`, whose stored PASERK public key is
+/// `device_key`, valid for `ttl`.
+pub fn issue_access_token(
+    key: &ServerKey,
+    device_id: &str,
+    device_key: &str,
+    ttl: Duration,
+) -> Result<IssuedToken> {
     let mut claims =
         Claims::new_expires_in(&ttl).map_err(|error| ServerError::Token(error.to_string()))?;
     claims
@@ -74,6 +91,9 @@ pub fn issue_access_token(key: &ServerKey, device_id: &str, ttl: Duration) -> Re
         .map_err(|error| ServerError::Token(error.to_string()))?;
     claims
         .add_additional("scope", SCOPE_LIBRARY)
+        .map_err(|error| ServerError::Token(error.to_string()))?;
+    claims
+        .add_additional(DEVICE_KEY_CLAIM, device_key_fingerprint(device_key))
         .map_err(|error| ServerError::Token(error.to_string()))?;
 
     let token = public::sign(key.secret(), &claims, None, None)

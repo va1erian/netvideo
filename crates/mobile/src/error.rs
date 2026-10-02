@@ -20,6 +20,10 @@ pub enum MobileError {
     /// The device was revoked or its token expired: pair again.
     #[error("this device must pair again")]
     Unauthorized,
+    /// The server is not the one the pairing QR code named, or it issued a
+    /// token its pinned key did not sign. Possibly an impostor.
+    #[error("the server's identity does not match")]
+    ServerMismatch,
     /// The server could not be reached.
     #[error("{detail}")]
     Network {
@@ -54,6 +58,7 @@ impl From<ClientError> for MobileError {
             ClientError::NotPaired => Self::NotPaired,
             ClientError::PairingCode => Self::PairingCode,
             ClientError::Unauthorized => Self::Unauthorized,
+            ClientError::ServerKey => Self::ServerMismatch,
             ClientError::Network(_) => Self::Network {
                 detail: error.to_string(),
             },
@@ -92,6 +97,10 @@ mod tests {
         assert!(matches!(
             ClientError::PairingCode.into(),
             MobileError::PairingCode
+        ));
+        assert!(matches!(
+            ClientError::ServerKey.into(),
+            MobileError::ServerMismatch
         ));
         assert!(matches!(
             ClientError::Network("down".into()).into(),

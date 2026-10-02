@@ -61,9 +61,32 @@ Out of scope:
     addresses are refused rather than let through.
 - The device generates its own Ed25519 key and sends only the public half.
   The server never sees a device private key.
-- **(planned, M2)** A QR pairing code will also carry the server URL and the
-  fingerprint of the server's public key. The client then rejects a token
-  signed by any other key, which defeats a man-in-the-middle during pairing.
+- **Server key pinning.** The pairing reply carries the server's public
+  key, and the client pins it with its credentials. Every access token
+  names the device it was issued to (`sub`) and the fingerprint of that
+  device's public key (`device_key`). The client checks every token it
+  receives, at pairing and on each refresh: signed by the pinned key, for
+  its own device id, for its own key. A token that fails stops the session
+  with an identity error, rather than falling back to the current token.
+  Credentials from before pinning existed pin the key the server sends at
+  their next refresh.
+- **QR pairing.** `netvideo-server pair --qr --url <address>` also prints a
+  QR code holding the address, the code and the fingerprint of the
+  server's public key. A client that scans it refuses a server whose key
+  does not match, before it stores anything. This stops an impostor that
+  does not hold the server key (a hijacked address, a lookalike server)
+  from pairing the device.
+  - What it does not stop: the code travels to the server in the clear
+    inside TLS. A man-in-the-middle that breaks TLS (a rogue certificate)
+    and can reach the real server can redeem the code itself, or pair its
+    own key in the device's place. The second case is caught: the reply's
+    `device_key` names the attacker's key, so the device refuses it and
+    reports an identity error instead of believing it is paired. TLS stays
+    the defence for the code itself.
+  - A typed code has no fingerprint: the first key the client sees is
+    trusted, then pinned.
+  - The QR code contains the live pairing code, so it is as sensitive as
+    the code itself.
 - The HMAC key is the server's signing key, so pairing adds no secret of its
   own to protect.
 
@@ -124,8 +147,11 @@ Out of scope:
 - Request bodies are capped at `max_body_bytes` (default 64 KiB, at most
   1 MiB). JSON bodies and folder-listing queries reject unknown fields.
   Endpoints that take no query parameters ignore the query string.
-- **(planned, M2)** The Android client will refuse cleartext traffic, except
-  in explicit LAN debug builds.
+- **Client storage and transport (Android).** Release builds refuse
+  cleartext, both in the platform's HTTP stack and in the Rust core's own
+  sockets; debug builds allow it for LAN testing. The device key and
+  tokens are sealed by a non-exportable Android Keystore key, and backups
+  are disabled.
 - **No secrets in URLs.** Tokens travel only in the `Authorization` header.
   **(planned, M3)** HLS segment requests will also use that header, so
   playlists carry no tokens.

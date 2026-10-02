@@ -20,6 +20,7 @@ export NETVIDEO_DATA_DIR=./data
 export NETVIDEO_FFPROBE=ffprobe              # optional; videos are indexed unprobed without it
 cargo run -p netvideo-server -- serve
 cargo run -p netvideo-server -- pair      # one-time code for an admin device
+cargo run -p netvideo-server -- pair --qr --url https://video.example  # plus a QR code for the app
 cargo run -p netvideo-server -- devices   # list paired devices
 ```
 

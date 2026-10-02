@@ -56,6 +56,9 @@ pub struct PairResponse {
     pub auth_token: String,
     /// Token expiry (Unix seconds).
     pub expires_at: i64,
+    /// The server's PASERK public key: clients pin it and check that every
+    /// token they receive is signed by it.
+    pub server_key: String,
 }
 
 /// Refresh request body.
@@ -66,13 +69,16 @@ pub struct RefreshRequest {
     pub proof: String,
 }
 
-/// Token response shared by pairing and refresh.
+/// Response of a token refresh.
 #[derive(Debug, Serialize)]
 pub struct TokenResponse {
     /// The access token.
     pub auth_token: String,
     /// Expiry (Unix seconds).
     pub expires_at: i64,
+    /// The server's PASERK public key, so clients paired before pinning
+    /// existed can pin it.
+    pub server_key: String,
 }
 
 /// A device as returned by the management endpoints (no public key).
@@ -152,6 +158,7 @@ pub async fn pair(
         return Err(ApiError::too_many_requests());
     }
 
+    let server_key = state.keys.public_paserk().map_err(ApiError::from)?;
     let db = state.db.clone();
     let keys = Arc::clone(&state.keys);
     let ttl = state.token_ttl();
@@ -178,6 +185,7 @@ pub async fn pair(
                 device_name: outcome.device.name,
                 auth_token: outcome.token.token,
                 expires_at: outcome.token.expires_at,
+                server_key,
             }))
         }
         Err(error) => {
@@ -223,11 +231,17 @@ pub async fn refresh(
         }
     }
 
-    let issued = issue_access_token(&state.keys, &device.id, state.token_ttl())?;
+    let issued = issue_access_token(
+        &state.keys,
+        &device.id,
+        &device.public_key,
+        state.token_ttl(),
+    )?;
     audit::token_refreshed(&ip_text, &device.id);
     Ok(Json(TokenResponse {
         auth_token: issued.token,
         expires_at: issued.expires_at,
+        server_key: state.keys.public_paserk()?,
     }))
 }
 

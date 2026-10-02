@@ -242,3 +242,121 @@ fn viewers_forget_locally_even_though_the_server_refuses_revocation() {
     session.forget().expect("forget");
     assert!(store.load(&session.endpoint().id).unwrap().is_none());
 }
+
+#[test]
+fn pins_the_server_key_from_a_pairing_link() {
+    let server = start_server();
+    let store = Arc::new(FileStore::with_dir(server.dir.path().join("client")));
+    let session = server.session(&store);
+    let real = server.state.keys.fingerprint().expect("fingerprint");
+
+    let wrong = "0".repeat(64);
+    assert!(matches!(
+        session.pair_pinned(&server.code(false), "phone", Some(&wrong)),
+        Err(ClientError::ServerKey)
+    ));
+    assert!(
+        session.device_id().is_none(),
+        "nothing stored on a mismatch"
+    );
+
+    session
+        .pair_pinned(&server.code(false), "phone", Some(&real))
+        .expect("pair");
+    let id = session.endpoint().id.clone();
+    let stored = store.load(&id).unwrap().unwrap();
+    assert_eq!(
+        stored
+            .server_key
+            .as_deref()
+            .map(netvideo_client::auth::server_key_fingerprint),
+        Some(real)
+    );
+}
+
+#[test]
+fn unpinned_credentials_pin_the_key_on_refresh() {
+    let server = start_server();
+    let store = Arc::new(FileStore::with_dir(server.dir.path().join("client")));
+    let session = server.session(&store);
+    session.pair(&server.code(false), "phone").expect("pair");
+    let id = session.endpoint().id.clone();
+    let mut stored = store.load(&id).unwrap().unwrap();
+    stored.server_key = None;
+    stored.expires_at = unix_now() + 60;
+    store.save(&id, &stored).unwrap();
+
+    let session = server.session(&store);
+    assert_ne!(session.token().expect("refreshed"), stored.token);
+    let pinned = store
+        .load(&id)
+        .unwrap()
+        .unwrap()
+        .server_key
+        .expect("pinned");
+    assert_eq!(
+        netvideo_client::auth::server_key_fingerprint(&pinned),
+        server.state.keys.fingerprint().unwrap()
+    );
+}
+
+#[test]
+fn tokens_from_another_key_are_refused_on_refresh() {
+    let server = start_server();
+    let store = Arc::new(FileStore::with_dir(server.dir.path().join("client")));
+    let session = server.session(&store);
+    session.pair(&server.code(false), "phone").expect("pair");
+
+    // Pin some other server's key, then make the token due for refresh.
+    let (_, other) = netvideo_client::auth::generate_keypair().unwrap();
+    let id = session.endpoint().id.clone();
+    let mut stored = store.load(&id).unwrap().unwrap();
+    stored.server_key = Some(netvideo_client::auth::public_key_paserk(&other).unwrap());
+    stored.expires_at = unix_now() + 60;
+    store.save(&id, &stored).unwrap();
+
+    // The renewed token fails the pin: an impostor is assumed, so the
+    // session stops instead of handing it the current token again.
+    let session = server.session(&store);
+    assert!(matches!(session.token(), Err(ClientError::ServerKey)));
+    assert_eq!(store.load(&id).unwrap().unwrap().token, stored.token);
+}
+
+#[test]
+fn a_reply_for_a_substituted_device_key_is_refused() {
+    use netvideo_client::auth;
+    let server = start_server();
+    // A relaying man-in-the-middle redeems the code with its own key and
+    // hands the genuine reply to the victim.
+    let (_, attacker) = auth::generate_keypair().unwrap();
+    let attacker = auth::public_key_paserk(&attacker).unwrap();
+    let endpoint = ServerEndpoint::new("Home", &server.url).unwrap();
+    let client = netvideo_client::RemoteClient::from_endpoint(&endpoint).unwrap();
+    let reply = client
+        .pair(&server.code(true), "phone", &attacker)
+        .expect("pair");
+    let server_key = reply.server_key.expect("server key");
+
+    let (_, victim) = auth::generate_keypair().unwrap();
+    let victim = auth::device_key_fingerprint(&auth::public_key_paserk(&victim).unwrap());
+    let check = |device_key: &str| {
+        auth::verify_issued_token(&server_key, &reply.auth_token, &reply.device_id, device_key)
+    };
+    assert!(matches!(check(&victim), Err(ClientError::ServerKey)));
+    assert!(check(&auth::device_key_fingerprint(&attacker)).is_ok());
+}
+
+#[test]
+fn fingerprints_match_the_servers() {
+    use netvideo_client::auth;
+    let (_, public) = auth::generate_keypair().unwrap();
+    let paserk = auth::public_key_paserk(&public).unwrap();
+    assert_eq!(
+        auth::device_key_fingerprint(&paserk),
+        netvideo_server::auth::paseto::device_key_fingerprint(&paserk)
+    );
+    assert_eq!(
+        auth::server_key_fingerprint(&paserk),
+        netvideo_server::auth::keys::server_key_fingerprint(&paserk)
+    );
+}
