@@ -32,21 +32,29 @@ impl ScanCoordinator {
         let Ok(_guard) = self.running.try_lock() else {
             return Ok(None);
         };
+        self.scan_locked(db).await.map(Some)
+    }
+
+    /// Runs a scan; the caller holds the `running` lock.
+    async fn scan_locked(&self, db: &Db) -> Result<ScanStats> {
         let started = Instant::now();
         let stats = self.scanner.scan(db).await?;
         audit::scan_finished(&stats, started.elapsed().as_millis() as u64);
-        Ok(Some(stats))
+        Ok(stats)
     }
 
     /// Starts a scan in the background. Returns `false` when one is already
     /// running.
     pub fn trigger(&self, db: Db) -> bool {
-        if self.running.try_lock().is_err() {
+        // The guard moves into the task, so no other scan can slip in between
+        // this check and the scan itself.
+        let Ok(guard) = Arc::clone(&self.running).try_lock_owned() else {
             return false;
-        }
+        };
         let this = self.clone();
         tokio::spawn(async move {
-            if let Err(error) = this.scan_once(&db).await {
+            let _guard = guard;
+            if let Err(error) = this.scan_locked(&db).await {
                 tracing::error!(%error, "library scan failed");
             }
         });

@@ -372,3 +372,50 @@ async fn real_ffprobe_metadata_is_stored() {
     // An unchanged, probed file is not probed or written again.
     assert_eq!(scan(&harness).await.written, 0);
 }
+
+#[tokio::test]
+async fn a_triggered_scan_holds_the_lock_until_it_runs() {
+    let harness = unprobed();
+    write(&harness, "movie.mkv", b"movie");
+    assert!(harness.state.scan.trigger(harness.state.db.clone()));
+    // Nothing has yielded to the spawned task yet, yet the lock is taken.
+    assert!(!harness.state.scan.trigger(harness.state.db.clone()));
+    let raced = harness
+        .state
+        .scan
+        .scan_once(&harness.state.db)
+        .await
+        .unwrap();
+    assert!(raced.is_none(), "the triggered scan owns the lock");
+}
+
+#[tokio::test]
+async fn etags_follow_the_file_not_the_last_scan() {
+    let harness = unprobed();
+    write(&harness, "movie.mkv", b"version-1");
+    scan(&harness).await;
+    let viewer = harness.pair_viewer().await;
+    let id = video_id(&harness, &viewer.token, "movie.mkv").await;
+    let uri = format!("/api/v1/videos/{id}/file");
+    let (_, headers, _) = harness
+        .request(harness.authed("GET", &uri, &viewer.token))
+        .await;
+    let old_etag = headers[header::ETAG].clone();
+
+    // Same size, new content and mtime, and no rescan.
+    let path = harness.library.join("movie.mkv");
+    std::fs::write(&path, b"version-2").unwrap();
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(120);
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+
+    let mut cached = harness.authed("GET", &uri, &viewer.token);
+    cached.headers_mut().insert(header::IF_NONE_MATCH, old_etag);
+    let (status, _, body) = harness.request(cached).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(&body[..], b"version-2");
+}

@@ -89,11 +89,7 @@ pub fn walk_root(root: &Path) -> RootWalk {
             outcome.videos.push(FoundVideo {
                 rel_path,
                 size: metadata.len(),
-                mtime: metadata
-                    .modified()
-                    .ok()
-                    .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-                    .map_or(0, |duration| duration.as_secs() as i64),
+                mtime: unix_mtime(&metadata).unwrap_or(0),
             });
         }
     }
@@ -111,6 +107,12 @@ fn relative_slash_path(root: &Path, path: &Path) -> Option<String> {
         .map(|component| component.as_os_str().to_str())
         .collect::<Option<Vec<_>>>()?;
     Some(parts.join("/"))
+}
+
+/// A file's modification time in Unix seconds, when the platform reports one.
+pub fn unix_mtime(metadata: &std::fs::Metadata) -> Option<i64> {
+    let since_epoch = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
+    i64::try_from(since_epoch.as_secs()).ok()
 }
 
 #[cfg(test)]

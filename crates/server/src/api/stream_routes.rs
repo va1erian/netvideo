@@ -18,6 +18,7 @@ use crate::audit;
 use crate::auth::middleware::{AuthDevice, ClientIp};
 use crate::error::ServerError;
 use crate::scanner::formats::video_mime;
+use crate::scanner::walk::unix_mtime;
 use crate::state::AppState;
 
 /// `GET /api/v1/videos/{id}/file`
@@ -57,7 +58,10 @@ pub async fn file(
     };
     let len = metadata.len();
     let mime = video_mime(&location.rel_path).unwrap_or("application/octet-stream");
-    let etag = format!("\"{:x}-{:x}\"", len, location.mtime);
+    // Live size and mtime, so a file replaced since the last scan never
+    // matches a stale ETag.
+    let mtime = unix_mtime(&metadata).unwrap_or(location.mtime);
+    let etag = format!("\"{len:x}-{mtime:x}\"");
     serve_with_range(&path, &headers, len, mime, &etag).await
 }
 
