@@ -4,6 +4,7 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import java.security.GeneralSecurityException
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -20,15 +21,27 @@ import uniffi.netvideo_mobile.SecretVault
 class KeystoreVault(context: Context) : SecretVault {
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
+    /**
+     * An entry that no longer decrypts (the Keystore key was reset, or the
+     * data is damaged) is deleted and reads as missing, so the app offers
+     * pairing again instead of failing on every start.
+     */
     override fun read(key: String): String? {
         val stored = prefs.getString(key, null) ?: return null
-        val bytes = Base64.decode(stored, Base64.NO_WRAP)
-        require(bytes.size > IV_BYTES) { "vault entry is truncated" }
-        val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.DECRYPT_MODE, secretKey(), GCMParameterSpec(TAG_BITS, bytes, 0, IV_BYTES))
-        cipher.updateAAD(key.toByteArray(Charsets.UTF_8))
-        val plain = cipher.doFinal(bytes, IV_BYTES, bytes.size - IV_BYTES)
-        return String(plain, Charsets.UTF_8)
+        return try {
+            val bytes = Base64.decode(stored, Base64.NO_WRAP)
+            require(bytes.size > IV_BYTES) { "vault entry is truncated" }
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(Cipher.DECRYPT_MODE, secretKey(), GCMParameterSpec(TAG_BITS, bytes, 0, IV_BYTES))
+            cipher.updateAAD(key.toByteArray(Charsets.UTF_8))
+            String(cipher.doFinal(bytes, IV_BYTES, bytes.size - IV_BYTES), Charsets.UTF_8)
+        } catch (unreadable: GeneralSecurityException) {
+            delete(key)
+            null
+        } catch (unreadable: IllegalArgumentException) {
+            delete(key)
+            null
+        }
     }
 
     override fun write(key: String, value: String) {

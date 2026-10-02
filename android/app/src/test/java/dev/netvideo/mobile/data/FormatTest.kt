@@ -18,6 +18,7 @@ class FormatTest {
         assertEquals("2160p", Format.resolution(3840, 2160))
         assertEquals("720p", Format.resolution(1280, 720))
         assertEquals("480p", Format.resolution(640, 480))
+        assertEquals("1080p", Format.resolution(1080, 1920))
         assertNull(Format.resolution(null, 1080))
     }
 

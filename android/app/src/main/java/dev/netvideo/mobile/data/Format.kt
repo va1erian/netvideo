@@ -18,14 +18,17 @@ object Format {
     /** `2160p`, `1080p`, ... from the frame height, or `null` when unknown. */
     fun resolution(width: Long?, height: Long?): String? {
         if (width == null || height == null || width <= 0 || height <= 0) return null
-        // Wide films are letterboxed (1920x800 is still 1080p): go by width.
-        val lines = maxOf(height, width * 9 / 16)
+        // Letterboxed films (1920x800) are still 1080p, and portrait clips
+        // (1080x1920) too: rate the short side, or the long side at 16:9.
+        val short = minOf(width, height)
+        val long = maxOf(width, height)
+        val lines = maxOf(short, long * 9 / 16)
         return when {
             lines >= 2000 -> "2160p"
             lines >= 1400 -> "1440p"
             lines >= 1000 -> "1080p"
             lines >= 700 -> "720p"
-            else -> "${height}p"
+            else -> "${short}p"
         }
     }
 

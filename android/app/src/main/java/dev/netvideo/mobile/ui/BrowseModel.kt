@@ -1,5 +1,6 @@
 package dev.netvideo.mobile.ui
 
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -24,8 +25,11 @@ data class Listing(
 
 /**
  * Browse state, hoisted above the screens so it survives playing a video:
- * the folder stack and a cache of each visited folder's listing.
+ * the folder stack, a cache of each visited folder's listing and its scroll
+ * position.
  *
+ * One load runs at a time, for the open folder; navigating cancels it. All
+ * state is written on the main thread, after the blocking fetch returns.
  * With a single library root the stack starts inside it, so the user never
  * sees a one-item list.
  */
@@ -42,43 +46,50 @@ class BrowseModel(private val session: MobileSession, private val scope: Corouti
         private set
 
     private var listings by mutableStateOf<Map<String, Listing>>(emptyMap())
+    private var singleRoot by mutableStateOf(false)
+    private val scrolls = mutableMapOf<String, LazyListState>()
     private var job: Job? = null
-    private var singleRoot = false
 
     /** The open folder's listing, when loaded. */
     val listing: Listing? get() = stack.lastOrNull()?.let { listings[it.id] }
 
     val canGoBack: Boolean get() = stack.size > (if (singleRoot) 1 else 0)
 
+    /** The scroll position of the open folder (or the roots). */
+    fun scroll(): LazyListState = scrolls.getOrPut(stack.lastOrNull()?.id ?: ROOTS) { LazyListState() }
+
     /** Loads the roots, unless they are loaded already. */
     fun start() {
-        if (roots == null) reload()
+        if (roots == null && job?.isActive != true) reload()
     }
 
     fun open(folder: FolderRef) {
-        stack = stack + folder
-        if (folder.id !in listings) load(folder.id, null)
+        navigate(stack + folder)
     }
 
     fun back() {
-        if (!canGoBack) return
-        stack = stack.dropLast(1)
-        // A load cancelled by navigating away left nothing cached.
-        val folder = stack.lastOrNull()
-        if (folder != null && folder.id !in listings) load(folder.id, null)
+        if (canGoBack) navigate(stack.dropLast(1))
     }
 
     /** Reloads the open folder (or the roots) from the start. */
     fun reload() {
         val folder = stack.lastOrNull()
-        if (folder == null) loadRoots() else load(folder.id, null)
+        if (folder == null) {
+            fetch {
+                val loaded = session.roots()
+                val only = loaded.singleOrNull()
+                Fetched(only?.id, only?.let { session.folder(it.id, null, PAGE) }, false, loaded)
+            }
+        } else {
+            load(folder.id, null)
+        }
     }
 
     /** Fetches the next page of the open folder, if there is one. */
     fun loadMore() {
         val folder = stack.lastOrNull() ?: return
         val cursor = listings[folder.id]?.nextCursor ?: return
-        if (!loading) load(folder.id, cursor)
+        if (job?.isActive != true) load(folder.id, cursor)
     }
 
     /** Shows progress saved by the player without refetching the folder. */
@@ -90,50 +101,60 @@ class BrowseModel(private val session: MobileSession, private val scope: Corouti
         }
     }
 
-    private fun loadRoots() = run {
-        val loaded = session.roots()
-        roots = loaded
-        singleRoot = loaded.size == 1
-        if (singleRoot) {
-            stack = loaded
-            Fetched(loaded[0].id, session.folder(loaded[0].id, null, PAGE), append = false)
-        } else {
-            null
-        }
+    /** Leaves the open folder: its load and error do not follow the user. */
+    private fun navigate(to: List<FolderRef>) {
+        job?.cancel()
+        loading = false
+        error = null
+        stack = to
+        val folder = to.lastOrNull()
+        if (folder != null && folder.id !in listings) load(folder.id, null)
     }
 
-    private fun load(folderId: String, cursor: String?) = run {
+    private fun load(folderId: String, cursor: String?) = fetch {
         Fetched(folderId, session.folder(folderId, cursor, PAGE), append = cursor != null)
     }
 
-    private class Fetched(val folderId: String, val page: FolderPage, val append: Boolean)
+    private class Fetched(
+        val folderId: String?,
+        val page: FolderPage?,
+        val append: Boolean,
+        val roots: List<FolderRef>? = null,
+    )
 
-    /** Runs a blocking fetch off the main thread, then merges its page. */
-    private fun run(fetch: () -> Fetched?) {
+    /** Runs a blocking fetch off the main thread, then applies it here. */
+    private fun fetch(block: () -> Fetched) {
         job?.cancel()
         loading = true
         error = null
         job = scope.launch {
-            val result = withContext(Dispatchers.IO) { runCatching(fetch) }
+            // A cancelled job never resumes here, so stale results are dropped.
+            val result = withContext(Dispatchers.IO) { runCatching(block) }
             loading = false
-            result.onFailure { error = it }
-            result.getOrNull()?.let(::merge)
+            result.onFailure { error = it }.onSuccess(::show)
         }
     }
 
-    /** A first page replaces the cached listing; a later page extends it. */
-    private fun merge(fetched: Fetched) {
-        val page = fetched.page
-        val previous = listings[fetched.folderId]
+    private fun show(fetched: Fetched) {
+        fetched.roots?.let { loaded ->
+            roots = loaded
+            singleRoot = loaded.size == 1
+            if (singleRoot) stack = loaded
+        }
+        val id = fetched.folderId ?: return
+        val page = fetched.page ?: return
+        val previous = listings[id]
+        // A first page replaces the cached listing; a later page extends it.
         val listing = if (fetched.append && previous != null) {
             Listing(previous.folders + page.folders, previous.videos + page.videos, page.nextCursor)
         } else {
             Listing(page.folders, page.videos, page.nextCursor)
         }
-        listings = listings + (fetched.folderId to listing)
+        listings = listings + (id to listing)
     }
 
     private companion object {
         const val PAGE = 100u
+        const val ROOTS = ""
     }
 }

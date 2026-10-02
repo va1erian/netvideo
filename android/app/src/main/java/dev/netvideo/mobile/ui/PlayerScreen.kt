@@ -1,7 +1,7 @@
 package dev.netvideo.mobile.ui
 
-import android.app.Activity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalActivity
 import androidx.annotation.OptIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -50,8 +50,11 @@ import uniffi.netvideo_mobile.MobileSession
 import uniffi.netvideo_mobile.Progress
 import uniffi.netvideo_mobile.VideoSummary
 
-/** Saves progress after the screen is gone, so leaving never loses it. */
-private val saver = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+/**
+ * Saves progress after the screen is gone, so leaving never loses it. One
+ * at a time, in order, so an older position never lands after a newer one.
+ */
+private val saver = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
 
 /**
  * Plays a video's file directly (M2 has no transcoding yet), resuming from
@@ -96,6 +99,8 @@ fun PlayerScreen(session: MobileSession, video: VideoSummary, onClose: (Progress
         val position = player.currentPosition.coerceAtLeast(0)
         if (position == 0L && last == null) return
         val watched = Resume.isWatched(position, duration) || player.playbackState == Player.STATE_ENDED
+        val previous = last
+        if (previous != null && previous.positionMs == position && previous.watched == watched) return
         val progress = Progress(position, watched, System.currentTimeMillis() / 1000)
         last = progress
         saver.launch { runCatching { session.saveProgress(video.id, position, watched) } }
@@ -114,7 +119,8 @@ fun PlayerScreen(session: MobileSession, video: VideoSummary, onClose: (Progress
         }
     }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    DisposableEffect(player, lifecycle) {
+    // Keyed on the player alone: it is released here, so nothing may outlive it.
+    DisposableEffect(player) {
         val listener = object : Player.Listener {
             override fun onPlayerError(failure: PlaybackException) {
                 error = failure
@@ -176,7 +182,7 @@ private fun playbackMessage(failure: PlaybackException): String = when (failure.
 /** Hides the system bars while the player is shown. */
 @Composable
 private fun FullScreen() {
-    val activity = LocalContext.current as? Activity ?: return
+    val activity = LocalActivity.current ?: return
     DisposableEffect(activity) {
         val controller = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE

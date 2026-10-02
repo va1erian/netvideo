@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -111,14 +110,14 @@ private fun FolderList(
     model: BrowseModel,
     onPlay: (VideoSummary) -> Unit,
 ) {
-    val state = rememberLazyListState()
-    val nearEnd by remember {
+    val state = model.scroll()
+    val nearEnd by remember(state) {
         derivedStateOf {
             val last = state.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
             last >= state.layoutInfo.totalItemsCount - 10
         }
     }
-    LaunchedEffect(nearEnd, folders.size + videos.size) {
+    LaunchedEffect(nearEnd, folders.size + videos.size, model.loading) {
         if (nearEnd) model.loadMore()
     }
     if (folders.isEmpty() && videos.isEmpty() && !model.loading) {
