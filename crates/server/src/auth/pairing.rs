@@ -88,7 +88,7 @@ pub fn pair(
         return Err(ServerError::InvalidPairingCode);
     };
 
-    let token = issue_access_token(key, &device.id, token_ttl)?;
+    let token = issue_access_token(key, &device.id, &device.public_key, token_ttl)?;
     Ok(PairOutcome { device, token })
 }
 

@@ -71,10 +71,18 @@ fn main() -> Result<()> {
         } => {
             let _audit = audit::init(&config.server.data_dir).context("opening audit log")?;
             let ttl = ttl.min(netvideo_server::config::MAX_PAIRING_CODE_TTL_SECS);
+            // Checked first, so a bad URL never leaves an unseen live code.
+            let url = match (qr, url) {
+                (true, Some(url)) => Some(
+                    netvideo_server::auth::link::validate_public_url(&url)
+                        .context("checking --url")?,
+                ),
+                _ => None,
+            };
             let code =
                 server::print_pairing_code(&config, ttl, !viewer).context("generating code")?;
             audit::pairing_code_created("cli", None, !viewer);
-            if let (true, Some(url)) = (qr, url) {
+            if let Some(url) = url {
                 let qr = server::pairing_qr(&config, &url, &code).context("building QR code")?;
                 println!("{qr}");
             }

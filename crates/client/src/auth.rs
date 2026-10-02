@@ -49,17 +49,46 @@ pub fn server_key_fingerprint(public_paserk: &str) -> String {
     sha256_hex(b"netvideo/server-key/v1:", public_paserk.as_bytes())
 }
 
-/// Checks that `token` is signed by the server key `public_paserk`. Only
-/// the signature is checked: expiry is the server's business, and a device
+/// The fingerprint of a device's PASERK `k4.public` key, as the server
+/// puts it in each access token's `device_key` claim.
+pub fn device_key_fingerprint(public_paserk: &str) -> String {
+    sha256_hex(b"netvideo/device-key/v1:", public_paserk.as_bytes())
+}
+
+/// The [`device_key_fingerprint`] of the key pair whose secret is `secret`.
+pub fn own_device_key_fingerprint(secret: &AsymmetricSecretKey<V4>) -> Result<String> {
+    let public = AsymmetricPublicKey::<V4>::try_from(secret)
+        .map_err(|error| ClientError::Token(error.to_string()))?;
+    Ok(device_key_fingerprint(&public_key_paserk(&public)?))
+}
+
+/// Checks that `token` was issued by the server key `public_paserk` to this
+/// device: signed by that key, for `device_id`, and for the device key
+/// whose fingerprint is `device_key`. The last check catches a relaying
+/// man-in-the-middle that paired its own key in this device's place.
+///
+/// Expiry is not checked: that is the server's business, and a device
 /// clock that is off must not make a genuine token look forged.
-pub fn verify_server_token(public_paserk: &str, token: &str) -> Result<()> {
+pub fn verify_issued_token(
+    public_paserk: &str,
+    token: &str,
+    device_id: &str,
+    device_key: &str,
+) -> Result<()> {
     use pasetors::token::UntrustedToken;
     use pasetors::version4::PublicToken;
     let key = AsymmetricPublicKey::<V4>::try_from(public_paserk.trim())
         .map_err(|_| ClientError::ServerKey)?;
     let untrusted = UntrustedToken::<pasetors::Public, V4>::try_from(token)
         .map_err(|_| ClientError::ServerKey)?;
-    PublicToken::verify(&key, &untrusted, None, None).map_err(|_| ClientError::ServerKey)?;
+    let trusted =
+        PublicToken::verify(&key, &untrusted, None, None).map_err(|_| ClientError::ServerKey)?;
+    let claims: serde_json::Value =
+        serde_json::from_str(trusted.payload()).map_err(|_| ClientError::ServerKey)?;
+    let claim = |name: &str| claims.get(name).and_then(serde_json::Value::as_str);
+    if claim("sub") != Some(device_id) || claim("device_key") != Some(device_key) {
+        return Err(ClientError::ServerKey);
+    }
     Ok(())
 }
 

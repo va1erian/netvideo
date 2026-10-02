@@ -17,8 +17,9 @@ pub struct PairingLink {
 }
 
 impl PairingLink {
-    /// Parses a scanned link, rejecting anything that is not exactly the
-    /// format above: a QR code is untrusted input.
+    /// Parses a scanned link strictly, since a QR code is untrusted input:
+    /// one value per known parameter, exact formats. Unknown parameters are
+    /// ignored, so later servers can add some without breaking this client.
     pub fn parse(text: &str) -> Result<Self> {
         let invalid = || ClientError::Url("not a netvideo pairing code".into());
         let query = text

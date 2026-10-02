@@ -62,16 +62,27 @@ Out of scope:
 - The device generates its own Ed25519 key and sends only the public half.
   The server never sees a device private key.
 - **Server key pinning.** The pairing reply carries the server's public
-  key, and the client stores it with its credentials. From then on it
-  checks that every token it receives, including each refreshed one, is
-  signed by that key, and refuses any other.
+  key, and the client pins it with its credentials. Every access token
+  names the device it was issued to (`sub`) and the fingerprint of that
+  device's public key (`device_key`). The client checks every token it
+  receives, at pairing and on each refresh: signed by the pinned key, for
+  its own device id, for its own key. A token that fails stops the session
+  with an identity error, rather than falling back to the current token.
+  Credentials from before pinning existed pin the key the server sends at
+  their next refresh.
 - **QR pairing.** `netvideo-server pair --qr --url <address>` also prints a
   QR code holding the address, the code and the fingerprint of the
   server's public key. A client that scans it refuses a server whose key
-  does not match, before it stores anything. An impostor reached through
-  a hijacked address or a rogue certificate therefore cannot pair the
-  device. A real man-in-the-middle that relays to the genuine server still
-  sees the traffic, so TLS stays the defence against eavesdropping.
+  does not match, before it stores anything. This stops an impostor that
+  does not hold the server key (a hijacked address, a lookalike server)
+  from pairing the device.
+  - What it does not stop: the code travels to the server in the clear
+    inside TLS. A man-in-the-middle that breaks TLS (a rogue certificate)
+    and can reach the real server can redeem the code itself, or pair its
+    own key in the device's place. The second case is caught: the reply's
+    `device_key` names the attacker's key, so the device refuses it and
+    reports an identity error instead of believing it is paired. TLS stays
+    the defence for the code itself.
   - A typed code has no fingerprint: the first key the client sees is
     trusted, then pinned.
   - The QR code contains the live pairing code, so it is as sensitive as
