@@ -276,12 +276,29 @@ not offer those tracks for burn-in.
 
 ### 6.3 Hardware acceleration
 
-Off by default. Config `transcode.hwaccel = "none" | "vaapi" | "qsv" |
-"nvenc"`, with `/dev/dri` (Intel/AMD) or the NVIDIA runtime passed to the
-container. The image ships an ffmpeg build with these encoders
-(jellyfin-ffmpeg is the pragmatic choice; Debian's ffmpeg works for software
-and VAAPI). Startup runs a short self-test encode and falls back to software
-when the device is missing.
+The home server is an **Intel N150** (Alder Lake-N/Twin Lake: four E-cores,
+Xe graphics). Its CPU is too weak for more than about one software 1080p
+transcode, but its media engine decodes H.264, HEVC (8/10-bit), VP9 and AV1
+and encodes H.264 and HEVC in hardware. So hardware transcoding is the
+default path, not an option:
+
+- The image ships **jellyfin-ffmpeg**, which bundles a recent Intel iHD
+  media driver and oneVPL. Debian bookworm's driver is too old to be relied on
+  for this generation.
+- `/dev/dri/renderD128` is passed to the container (plus the `render` group
+  id), and nothing else.
+- Default config is `transcode.hwaccel = "qsv"` (with `"vaapi"` and `"none"`
+  as alternatives). The whole pipeline stays on the GPU: hardware decode,
+  scale with `vpp_qsv`/`scale_vaapi`, encode with `h264_qsv`.
+- HDR-to-SDR tone mapping for HDR sources is done on the GPU (`vpp_qsv` tone
+  mapping or OpenCL), since the CPU cannot keep up.
+- `max_transcodes` defaults to 2, and that default is checked against the
+  N150 during M3.
+- Startup runs a short self-test encode. If the device is missing it falls
+  back to software and logs a loud warning that only one transcode is
+  realistic.
+- Because transcoding is the scarce resource here, the decision in §6.1
+  prefers remux and audio-only transcode whenever possible.
 
 ### 6.4 ffmpeg containment
 
@@ -356,7 +373,7 @@ and no HTTP stack, so the desktop app needs:
   4. macOS: OpenGL is deprecated but functional; if it becomes a problem, a
      Metal path is the long-term answer and should be kept in mind when
      designing (1).
-- **Fallback route** if libmpv is rejected: `ffmpeg-next` decode to RGBA on a
+- **Rejected alternative**: `ffmpeg-next` decode to RGBA on a
   worker thread, `Image::from_rgba` into a custom-painted node, `cpal` for
   audio, our own A/V sync. Simpler dependency story, far more code, CPU-bound.
 - **Packaging**: libmpv shipped next to the executable (DLL on Windows, dylib
@@ -366,13 +383,13 @@ and no HTTP stack, so the desktop app needs:
 ## 8. Deployment
 
 - Multi-stage Dockerfile: `rust:1-bookworm` builder, `debian:bookworm-slim`
-  runtime with ffmpeg (or jellyfin-ffmpeg) and ca-certificates; uid 10001;
-  port 8080.
+  runtime with jellyfin-ffmpeg (§6.3) and ca-certificates; uid 10001; port
+  8080.
 - Volumes: media read-only at `/media/videos`, a named data volume
   (`/var/lib/netvideo`, DB + server key + audit log), and a cache volume
   (`/var/cache/netvideo`) for transcode segments. Root FS read-only, tmpfs
-  `/tmp`, `cap_drop: ALL`, `no-new-privileges`, optional `devices:
-  /dev/dri`.
+  `/tmp`, `cap_drop: ALL`, `no-new-privileges`, `devices:
+  /dev/dri/renderD128` with `group_add` for the render group.
 - Cosmos labels (`cosmos-cloud.enabled`, `domain`, `target-port=8080`) and
   `NETVIDEO_TRUSTED_PROXIES` set to the Cosmos network. Cosmos route settings
   must not buffer responses and must allow long-lived requests; the docs will
@@ -410,24 +427,23 @@ M2 and M4 can run in parallel once M1's API is stable.
 - Clients: see §7; the desktop widget gets headless snapshot tests of its
   controls through XUI's `OffscreenBackend`.
 
-## 11. Open questions
+## 11. Decisions taken
+
+- **Desktop decoder**: libmpv's render API in an XUI `GlWidget` (§7.2).
+- **Server hardware**: Intel N150, so jellyfin-ffmpeg with QSV/VAAPI is the
+  default transcoding path (§6.3).
+- **Accounts**: one owner, many devices; watch progress is per device.
+
+## 12. Open questions
 
 1. **Shared code with emusic**: copy and adapt (proposed, simplest now), or
    extract the auth/pairing/security modules into a shared crate both servers
    depend on? Sharing avoids fixing security bugs twice but couples the repos.
-2. **Desktop decoder**: libmpv in an XUI `GlWidget` (proposed), or
-   ffmpeg-next + cpal with our own A/V sync?
-3. **Where the video widget lives**: in netvideo (`crates/xui-video`,
+2. **Where the video widget lives**: in netvideo (`crates/xui-video`,
    proposed at first) or in the xui repo from the start?
-4. **ffmpeg build in the image**: Debian's package (smaller, VAAPI only) or
-   jellyfin-ffmpeg (QSV/NVENC, tone mapping, larger)? Which GPU does the home
-   server have?
-5. **Accounts**: is "one owner, many devices" enough, or will other people
-   (family) need separate watch progress? The plan assumes per-device
-   progress only.
-6. **Resume position and watched markers**: in scope for M2 (proposed) or
+3. **Resume position and watched markers**: in scope for M2 (proposed) or
    later?
-7. **QR pairing**: worth it for M2, or keep code-only pairing until later?
-8. **Remote bandwidth**: should the server offer an adaptive multi-bitrate
+4. **QR pairing**: worth it for M2, or keep code-only pairing until later?
+5. **Remote bandwidth**: should the server offer an adaptive multi-bitrate
    ladder, or one rendition chosen from the client's `max_bitrate`
    (proposed, simpler)?
