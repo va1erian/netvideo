@@ -29,7 +29,7 @@ netvideo is a home-lab video streaming server in Rust (Linux, Docker, behind Cos
 - Branch from the latest `origin/main`.
 - **Always rebase, never merge:** before submitting, `git fetch origin && git rebase origin/main`. On a `Cargo.lock` conflict, take `origin/main`'s version and re-run `cargo check`.
 - After rebasing, re-run all checks below, then push with `--force-with-lease`.
-- PRs are integrated into `main` with **rebase merge** only.
+- PRs are integrated into `main` with **rebase merge** or **squash merge**, never a merge commit.
 
 ## Before submitting (mandatory)
 All of these must pass locally — the same checks CI runs:
