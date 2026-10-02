@@ -10,12 +10,18 @@ pub mod stream_routes;
 use axum::Json;
 use axum::Router;
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use serde_json::{Value, json};
 use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::state::AppState;
+
+/// Longest a request to any endpoint but the file stream may take, body
+/// included, so a client dripping a body cannot hold a connection open.
+pub const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Builds the complete application router.
 pub fn router(state: AppState) -> Router {
@@ -33,8 +39,13 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/roots", get(library_routes::roots))
         .route("/api/v1/folders/{id}", get(library_routes::folder))
         .route("/api/v1/videos/{id}", get(library_routes::video))
-        .route("/api/v1/videos/{id}/file", get(stream_routes::file))
         .route("/api/v1/library/scan", post(library_routes::scan))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            REQUEST_TIMEOUT,
+        ))
+        // Streams run as long as the video; the stream limits bound them.
+        .route("/api/v1/videos/{id}/file", get(stream_routes::file))
         .layer(TraceLayer::new_for_http())
         .layer(RequestBodyLimitLayer::new(max_body))
         .with_state(state)

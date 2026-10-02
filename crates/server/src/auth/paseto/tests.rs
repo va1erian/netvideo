@@ -72,6 +72,31 @@ fn refresh_proof_round_trips_and_is_bound_to_the_token() {
 }
 
 #[test]
+fn long_lived_refresh_proofs_are_rejected() {
+    let (device_secret, device_public) = generate_device_keypair().unwrap();
+    let fingerprint = token_fingerprint("the-access-token");
+    let proof = issue_refresh_proof(
+        &device_secret,
+        &fingerprint,
+        MAX_REFRESH_PROOF_LIFETIME + Duration::from_secs(60),
+        Duration::from_secs(0),
+    )
+    .unwrap();
+    assert!(verify_refresh_proof(&device_public, &proof, &fingerprint).is_err());
+
+    // Backdating `iat` far past the skew allowance is caught as well, even
+    // though `exp` is close.
+    let backdated = issue_refresh_proof(
+        &device_secret,
+        &fingerprint,
+        Duration::from_secs(60),
+        MAX_REFRESH_PROOF_LIFETIME + MAX_REFRESH_PROOF_SKEW,
+    )
+    .unwrap();
+    assert!(verify_refresh_proof(&device_public, &backdated, &fingerprint).is_err());
+}
+
+#[test]
 fn refresh_proof_from_another_device_is_rejected() {
     let (device_secret, _) = generate_device_keypair().unwrap();
     let (_, other_public) = generate_device_keypair().unwrap();

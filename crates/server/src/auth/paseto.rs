@@ -23,6 +23,14 @@ use crate::error::{Result, ServerError};
 /// Custom claim carrying the SHA-256 of the token being refreshed.
 pub const REFRESH_FOR_CLAIM: &str = "refresh_for";
 
+/// Longest a refresh proof may stay valid, counted from when the server
+/// checks it. Bounds how long a captured proof matters at all.
+pub const MAX_REFRESH_PROOF_LIFETIME: Duration = Duration::from_secs(600);
+
+/// Clock skew allowed on top of [`MAX_REFRESH_PROOF_LIFETIME`] between a
+/// proof's `iat` and `exp`, since clients backdate `iat`.
+pub const MAX_REFRESH_PROOF_SKEW: Duration = Duration::from_secs(300);
+
 /// Access-token scope claim value.
 pub const SCOPE_LIBRARY: &str = "library:read stream:read";
 
@@ -99,7 +107,7 @@ pub fn verify_access_token(key: &ServerKey, token: &str) -> Result<VerifiedAcces
 /// token bound to `token_fingerprint`.
 ///
 /// The client clock is assumed to differ by at most `skew`, so `iat`/`nbf`
-/// are backdated and `exp` pushed forward by that amount.
+/// are backdated by that amount.
 pub fn issue_refresh_proof(
     device_secret: &AsymmetricSecretKey<V4>,
     token_fingerprint: &str,
@@ -119,13 +127,22 @@ pub fn issue_refresh_proof(
         .map_err(|error| ServerError::Token(error.to_string()))
 }
 
-/// Verifies a device's refresh proof and that it is bound to the presented
-/// token.
+/// Identity of a verified refresh proof, for replay tracking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedProof {
+    /// Unique proof identifier (`jti`).
+    pub proof_id: String,
+    /// Expiry as a Unix timestamp in seconds.
+    pub expires_at: i64,
+}
+
+/// Verifies a device's refresh proof, that it is bound to the presented
+/// token, and that it expires within [`MAX_REFRESH_PROOF_LIFETIME`].
 pub fn verify_refresh_proof(
     device_public: &AsymmetricPublicKey<V4>,
     proof: &str,
     expected_fingerprint: &str,
-) -> Result<()> {
+) -> Result<VerifiedProof> {
     let untrusted = UntrustedToken::<Public, V4>::try_from(proof)
         .map_err(|_| ServerError::Unauthorized("malformed refresh proof".into()))?;
     let rules = ClaimsValidationRules::new();
@@ -140,7 +157,20 @@ pub fn verify_refresh_proof(
             "refresh proof is not bound to this token".into(),
         ));
     }
-    Ok(())
+    let expires_at = unix_claim(claims, "exp")?;
+    let issued_at = unix_claim(claims, "iat")?;
+    let max = MAX_REFRESH_PROOF_LIFETIME.as_secs() as i64;
+    let skew = MAX_REFRESH_PROOF_SKEW.as_secs() as i64;
+    if expires_at > unix_now() + max || expires_at - issued_at > max + skew {
+        return Err(ServerError::Unauthorized(
+            "refresh proof lives too long".into(),
+        ));
+    }
+    let proof_id = string_claim(claims, "jti")?;
+    Ok(VerifiedProof {
+        proof_id,
+        expires_at,
+    })
 }
 
 /// Builds the fingerprint a refresh proof must be bound to.

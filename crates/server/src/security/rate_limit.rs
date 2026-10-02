@@ -34,11 +34,23 @@ impl RateLimiter {
         self.check_at(key, limit, window, Instant::now())
     }
 
-    /// Returns `true` if `key` still has room under `limit` per `window`,
-    /// without recording an attempt. Pair with [`RateLimiter::check`] to count
-    /// only some outcomes (for example failures).
-    pub fn has_capacity(&self, key: &str, limit: u32, window: Duration) -> bool {
-        self.has_capacity_at(key, limit, window, Instant::now())
+    /// Like [`RateLimiter::check`], but returns the recorded attempt so it
+    /// can be given back with [`RateLimiter::refund`].
+    pub fn charge(&self, key: &str, limit: u32, window: Duration) -> Option<Instant> {
+        let now = Instant::now();
+        self.check_at(key, limit, window, now).then_some(now)
+    }
+
+    /// Gives back the attempt `charge` recorded at `at`, for attempts charged
+    /// up front that turned out not to count (for example a successful
+    /// pairing against a failure budget). A no-op once it has expired.
+    pub fn refund(&self, key: &str, at: Instant) {
+        let mut map = self.lock();
+        if let Some(entries) = map.get_mut(key)
+            && let Some(index) = entries.iter().position(|entry| *entry == at)
+        {
+            entries.remove(index);
+        }
     }
 
     /// Clock-injectable variant used by tests.
@@ -59,18 +71,6 @@ impl RateLimiter {
         }
         entries.push_back(now);
         true
-    }
-
-    /// Clock-injectable variant of [`RateLimiter::has_capacity`].
-    pub fn has_capacity_at(&self, key: &str, limit: u32, window: Duration, now: Instant) -> bool {
-        let mut map = self.lock();
-        match map.get_mut(key) {
-            Some(entries) => {
-                expire(entries, now, window);
-                (entries.len() as u32) < limit
-            }
-            None => limit > 0,
-        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, VecDeque<Instant>>> {
@@ -170,14 +170,22 @@ mod tests {
     }
 
     #[test]
-    fn has_capacity_does_not_record() {
+    fn refund_returns_one_attempt() {
         let limiter = RateLimiter::new();
-        let now = Instant::now();
         let window = Duration::from_secs(60);
-        assert!(limiter.has_capacity_at("k", 1, window, now));
-        assert!(limiter.has_capacity_at("k", 1, window, now));
-        assert!(limiter.check_at("k", 1, window, now));
-        assert!(!limiter.has_capacity_at("k", 1, window, now));
+        let first = limiter.charge("k", 2, window).unwrap();
+        let second = limiter.charge("k", 2, window).unwrap();
+        assert!(limiter.charge("k", 2, window).is_none());
+        limiter.refund("k", first);
+        let third = limiter.charge("k", 2, window).unwrap();
+        assert!(
+            limiter.charge("k", 2, window).is_none(),
+            "one refund, one slot"
+        );
+        limiter.refund("k", second);
+        limiter.refund("k", third);
+        limiter.refund("missing", first);
+        assert!(limiter.charge("k", 2, window).is_some());
     }
 
     #[test]

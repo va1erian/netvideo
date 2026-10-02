@@ -5,7 +5,8 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use axum_server::tls_rustls::RustlsConfig;
-use tokio::net::TcpListener;
+use hyper_util::rt::{TokioExecutor, TokioTimer};
+use hyper_util::server::conn::auto::Builder;
 
 use crate::api;
 use crate::auth::ServerKey;
@@ -18,6 +19,11 @@ use crate::util::unix_now;
 
 /// Grace period for in-flight requests on shutdown.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+
+/// Longest a connection may take to send request headers. hyper starts the
+/// timer when a connection opens and again whenever a keep-alive connection
+/// goes idle, so it also closes silent and idle connections.
+const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Opens the store and loads the server key, returning shared state ready to
 /// serve. Does not start listening.
@@ -41,37 +47,59 @@ pub async fn serve(
         Duration::from_secs(state.config.library.scan_interval_secs),
     );
 
-    if state.config.tls_enabled() {
-        let tls = RustlsConfig::from_pem_file(
-            state.config.security.tls_cert.trim(),
-            state.config.security.tls_key.trim(),
-        )
-        .await
-        .map_err(|error| ServerError::Config(format!("cannot load TLS material: {error}")))?;
+    let handle = axum_server::Handle::new();
+    let shutdown_handle = handle.clone();
+    tokio::spawn(async move {
+        shutdown.await;
+        shutdown_handle.graceful_shutdown(Some(SHUTDOWN_GRACE));
+    });
+    let service = app.into_make_service_with_connect_info::<SocketAddr>();
 
+    if state.config.tls_enabled() {
+        let tls = load_tls(&state.config).await?;
         tracing::info!(%addr, "listening with direct TLS");
-        let handle = axum_server::Handle::new();
-        let shutdown_handle = handle.clone();
-        tokio::spawn(async move {
-            shutdown.await;
-            shutdown_handle.graceful_shutdown(Some(SHUTDOWN_GRACE));
-        });
-        axum_server::bind_rustls(addr, tls)
+        let mut server = axum_server::bind_rustls(addr, tls)
             .handle(handle)
-            .serve(app.into_make_service_with_connect_info::<SocketAddr>())
-            .await
-            .map_err(|error| ServerError::Io(std::io::Error::other(error)))?;
+            .http1_only();
+        set_header_timeout(server.http_builder());
+        server.serve(service).await?;
     } else {
-        let listener = TcpListener::bind(addr).await?;
         tracing::info!(%addr, "listening on plain HTTP (terminate TLS at the proxy)");
-        axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .with_graceful_shutdown(shutdown)
-        .await?;
+        let mut server = axum_server::bind(addr).handle(handle).http1_only();
+        set_header_timeout(server.http_builder());
+        server.serve(service).await?;
     }
     Ok(())
+}
+
+/// Loads the TLS certificate and key, offering only HTTP/1.1 in ALPN.
+///
+/// axum-server's PEM loaders (including its reload helpers) always offer
+/// h2, so any future certificate reload must go through this function.
+async fn load_tls(config: &Config) -> Result<RustlsConfig> {
+    let tls = RustlsConfig::from_pem_file(
+        config.security.tls_cert.trim(),
+        config.security.tls_key.trim(),
+    )
+    .await
+    .map_err(|error| ServerError::Config(format!("cannot load TLS material: {error}")))?;
+    let mut rustls = (*tls.get_inner()).clone();
+    rustls.alpn_protocols = vec![b"http/1.1".to_vec()];
+    tls.reload_from_config(std::sync::Arc::new(rustls));
+    Ok(tls)
+}
+
+/// Enables hyper's header timeout. Without a timer hyper enforces none, so a
+/// client could hold a connection by never finishing its headers.
+///
+/// The server is HTTP/1.1 only: detecting HTTP/2 means reading a
+/// connection's first bytes with no timeout, and HTTP/2 connections have no
+/// header timeout at all. The proxy and the clients all speak HTTP/1.1.
+fn set_header_timeout(builder: &mut Builder<TokioExecutor>) {
+    builder
+        .http1()
+        .timer(TokioTimer::new())
+        .header_read_timeout(HEADER_READ_TIMEOUT);
 }
 
 /// Initializes logging, builds state and serves until a shutdown signal.

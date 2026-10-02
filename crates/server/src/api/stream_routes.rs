@@ -36,6 +36,12 @@ pub async fn file(
         .map_err(|_| ApiError::internal())??
         .ok_or_else(ApiError::not_found)?;
 
+    // Taken before the file is opened, so a refused request never holds a
+    // file descriptor.
+    let Some(slot) = state.streams.acquire(&device.id) else {
+        audit::rate_limited(&ip.to_string(), "stream");
+        return Err(ApiError::too_many_requests());
+    };
     let roots = state.roots.clone();
     let (root_index, rel_path) = (location.root_index, location.rel_path.clone());
     let opened = tokio::task::spawn_blocking(move || {
@@ -77,10 +83,6 @@ pub async fn file(
         Ok(range) => range,
         Err(()) => return Ok(unsatisfiable(len)),
     };
-    let slot = state
-        .streams
-        .acquire(&device.id)
-        .ok_or_else(ApiError::too_many_requests)?;
     let file = tokio::fs::File::from_std(file);
     serve(file, slot, range, len, mime, &etag).await
 }

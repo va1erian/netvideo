@@ -18,6 +18,9 @@ services:
     environment:
       - RUST_LOG=info,netvideo_server=debug
       - NETVIDEO_LIBRARY_PATHS=/media/videos
+      # Docker bridges cannot reach each other, so this only trusts peers on
+      # netvideo's own network. Narrow it to that network's subnet if other
+      # containers share it.
       - NETVIDEO_TRUSTED_PROXIES=172.16.0.0/12,127.0.0.1
     volumes:
       # Videos are mounted read-only: the server never writes to the library.
