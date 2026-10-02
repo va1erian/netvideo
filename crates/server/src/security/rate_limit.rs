@@ -34,13 +34,22 @@ impl RateLimiter {
         self.check_at(key, limit, window, Instant::now())
     }
 
-    /// Gives back the most recent attempt recorded for `key`, for attempts
-    /// charged up front that turned out not to count (for example a
-    /// successful pairing against a failure budget).
-    pub fn refund(&self, key: &str) {
+    /// Like [`RateLimiter::check`], but returns the recorded attempt so it
+    /// can be given back with [`RateLimiter::refund`].
+    pub fn charge(&self, key: &str, limit: u32, window: Duration) -> Option<Instant> {
+        let now = Instant::now();
+        self.check_at(key, limit, window, now).then_some(now)
+    }
+
+    /// Gives back the attempt `charge` recorded at `at`, for attempts charged
+    /// up front that turned out not to count (for example a successful
+    /// pairing against a failure budget). A no-op once it has expired.
+    pub fn refund(&self, key: &str, at: Instant) {
         let mut map = self.lock();
-        if let Some(entries) = map.get_mut(key) {
-            entries.pop_back();
+        if let Some(entries) = map.get_mut(key)
+            && let Some(index) = entries.iter().position(|entry| *entry == at)
+        {
+            entries.remove(index);
         }
     }
 
@@ -163,13 +172,20 @@ mod tests {
     #[test]
     fn refund_returns_one_attempt() {
         let limiter = RateLimiter::new();
-        let now = Instant::now();
         let window = Duration::from_secs(60);
-        assert!(limiter.check_at("k", 1, window, now));
-        limiter.refund("k");
-        assert!(limiter.check_at("k", 1, window, now));
-        assert!(!limiter.check_at("k", 1, window, now));
-        limiter.refund("missing");
+        let first = limiter.charge("k", 2, window).unwrap();
+        let second = limiter.charge("k", 2, window).unwrap();
+        assert!(limiter.charge("k", 2, window).is_none());
+        limiter.refund("k", first);
+        let third = limiter.charge("k", 2, window).unwrap();
+        assert!(
+            limiter.charge("k", 2, window).is_none(),
+            "one refund, one slot"
+        );
+        limiter.refund("k", second);
+        limiter.refund("k", third);
+        limiter.refund("missing", first);
+        assert!(limiter.charge("k", 2, window).is_some());
     }
 
     #[test]

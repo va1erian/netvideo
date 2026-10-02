@@ -27,6 +27,10 @@ pub const REFRESH_FOR_CLAIM: &str = "refresh_for";
 /// checks it. Bounds how long a captured proof matters at all.
 pub const MAX_REFRESH_PROOF_LIFETIME: Duration = Duration::from_secs(600);
 
+/// Clock skew allowed on top of [`MAX_REFRESH_PROOF_LIFETIME`] between a
+/// proof's `iat` and `exp`, since clients backdate `iat`.
+pub const MAX_REFRESH_PROOF_SKEW: Duration = Duration::from_secs(300);
+
 /// Access-token scope claim value.
 pub const SCOPE_LIBRARY: &str = "library:read stream:read";
 
@@ -103,7 +107,7 @@ pub fn verify_access_token(key: &ServerKey, token: &str) -> Result<VerifiedAcces
 /// token bound to `token_fingerprint`.
 ///
 /// The client clock is assumed to differ by at most `skew`, so `iat`/`nbf`
-/// are backdated and `exp` pushed forward by that amount.
+/// are backdated by that amount.
 pub fn issue_refresh_proof(
     device_secret: &AsymmetricSecretKey<V4>,
     token_fingerprint: &str,
@@ -154,7 +158,10 @@ pub fn verify_refresh_proof(
         ));
     }
     let expires_at = unix_claim(claims, "exp")?;
-    if expires_at > unix_now() + MAX_REFRESH_PROOF_LIFETIME.as_secs() as i64 {
+    let issued_at = unix_claim(claims, "iat")?;
+    let max = MAX_REFRESH_PROOF_LIFETIME.as_secs() as i64;
+    let skew = MAX_REFRESH_PROOF_SKEW.as_secs() as i64;
+    if expires_at > unix_now() + max || expires_at - issued_at > max + skew {
         return Err(ServerError::Unauthorized(
             "refresh proof lives too long".into(),
         ));

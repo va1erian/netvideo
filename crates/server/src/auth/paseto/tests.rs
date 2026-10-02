@@ -83,6 +83,17 @@ fn long_lived_refresh_proofs_are_rejected() {
     )
     .unwrap();
     assert!(verify_refresh_proof(&device_public, &proof, &fingerprint).is_err());
+
+    // Backdating `iat` far past the skew allowance is caught as well, even
+    // though `exp` is close.
+    let backdated = issue_refresh_proof(
+        &device_secret,
+        &fingerprint,
+        Duration::from_secs(60),
+        MAX_REFRESH_PROOF_LIFETIME + MAX_REFRESH_PROOF_SKEW,
+    )
+    .unwrap();
+    assert!(verify_refresh_proof(&device_public, &backdated, &fingerprint).is_err());
 }
 
 #[test]

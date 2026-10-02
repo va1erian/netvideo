@@ -1,6 +1,6 @@
 //! Structured audit logging for security-relevant events.
 //!
-//! Operational logs go to stdout; audit events additionally go to a JSON log
+//! Operational logs go to stderr; audit events additionally go to a JSON log
 //! file under the data directory, one JSON object per line, so they can be
 //! shipped or grepped without parsing prose. The helper functions here are
 //! deliberately typed: it is impossible to emit an audit event with the wrong
@@ -21,7 +21,13 @@ pub const AUDIT_TARGET: &str = "netvideo_server::audit";
 /// lifetime; dropping it stops the audit writer.
 pub fn init(data_dir: &Path) -> std::io::Result<WorkerGuard> {
     std::fs::create_dir_all(data_dir)?;
-    let file_appender = tracing_appender::rolling::daily(data_dir, "audit.log");
+    // The builder reports an unwritable directory as an error; `daily` would
+    // panic instead.
+    let file_appender = tracing_appender::rolling::RollingFileAppender::builder()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix("audit.log")
+        .build(data_dir)
+        .map_err(std::io::Error::other)?;
     // Security events must not be dropped under load: block the audit event
     // producer rather than lose a record (`lossy(false)`).
     let (audit_writer, guard) = tracing_appender::non_blocking::NonBlockingBuilder::default()

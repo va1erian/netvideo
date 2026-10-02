@@ -53,9 +53,9 @@ Out of scope:
     successes included), with IPv6 clients grouped by /64;
   - globally, at 30 failed attempts per minute across all clients, which
     bounds a distributed guess against the 10⁶ code space. Each attempt is
-    charged before it runs and refunded only if it succeeds, so concurrent
-    guesses cannot overrun the budget. The trade-off is
-    that a guesser can block pairing for everyone for a minute at a time;
+    charged before it runs, and refunded only if it succeeds or the per-IP
+    limit refuses it, so concurrent guesses cannot overrun the budget. The
+    trade-off is that a guesser can block pairing for everyone for a minute at a time;
     already paired devices are unaffected;
   - while the limiter's table is full (4096 tracked clients), new client
     addresses are refused rather than let through.
@@ -74,9 +74,12 @@ Out of scope:
 - To refresh a token, the client must send a proof signed by its device key
   that names the current token's fingerprint. A stolen token can be used
   until it expires but cannot be extended.
-- A proof may live at most 10 minutes, and each one is accepted once: the
-  server remembers used proof ids until they expire. A refresh does not
-  revoke the old token, which stays valid until its own expiry.
+- A proof must expire within 10 minutes of being checked, and within
+  15 minutes of its own `iat` (10 plus a clock-skew allowance). Each proof
+  is accepted once: the server remembers used proof ids until they expire,
+  at most 8 live ones per device, so one device cannot crowd out the
+  others' refreshes. A refresh does not revoke the old token, which stays
+  valid until its own expiry.
 - Every authenticated request checks that the device still exists and is not
   revoked, so revocation takes effect immediately.
 - **Roles.**
@@ -99,9 +102,10 @@ Out of scope:
   IPv4 peers that a dual-stack listener reports as `::ffff:a.b.c.d` are
   matched as IPv4.
 - The example compose file trusts `172.16.0.0/12`. Docker isolates bridge
-  networks from each other, so only containers on netvideo's own network
-  can use that trust; keep that network to netvideo and Cosmos, or narrow
-  the range to its subnet.
+  networks from each other, so only containers on netvideo's own network,
+  and processes on the host (through the bridge gateway), can use that
+  trust. Narrow it to the exact address of Cosmos on that network when
+  other containers or untrusted host users are around.
 - TLS is terminated by Cosmos, or by the server itself when
   `tls_cert`/`tls_key` are set. Configuring only one of the two is rejected
   at startup.
@@ -111,10 +115,12 @@ Out of scope:
   file and a socket, and a client that stops reading holds both, so without
   these limits one device or stolen token could exhaust the server's file
   descriptors. The compose file also raises `nofile` to 8192.
-- **Timeouts.** A connection must send its first byte, and each request
-  its headers, within 30 s; that also closes idle keep-alive connections.
-  A request body must arrive within 30 s. The server speaks HTTP/1.1 only,
-  because detecting HTTP/2 would mean waiting on a silent connection.
+- **Timeouts.** A connection must send each request's headers within 30 s
+  of opening or of going idle, which also closes silent and idle
+  keep-alive connections. Every request other than a file stream must
+  finish within 30 s, body included. The server speaks HTTP/1.1 only, with
+  ALPN `http/1.1` under TLS: detecting HTTP/2 would mean waiting on a
+  silent connection, and HTTP/2 connections get no header timeout.
 - Request bodies are capped at `max_body_bytes` (default 64 KiB, at most
   1 MiB). JSON bodies and folder-listing queries reject unknown fields.
   Endpoints that take no query parameters ignore the query string.
@@ -205,6 +211,8 @@ need write access to the media, which only the owner's other machines have.
   stream open; the stream limits bound how many it can hold.
 - The proof log lives in memory, so a restart forgets it. A proof captured
   before a restart can be replayed once within its 10 minutes.
+- Taking a stream slot comes first, so a device with 4 open streams gets
+  429 even for a request that would have been a 304.
 - ffprobe opens the walked path directly. A directory swapped for a symlink
   between the walk and the probe could let ffprobe read metadata from
   outside the root. Serving is not affected, because it re-checks the
@@ -235,6 +243,9 @@ need write access to the media, which only the owner's other machines have.
 - `RUST_LOG` filters only the console output. The audit log always records
   security events.
 - Old files are not deleted; prune them with the host's log rotation.
+- Run CLI commands as the server's user (`docker exec`, as in the compose
+  file, does this). A root-owned log file would stop the server from
+  rolling over to the next day's file.
 
 ## Supply chain
 

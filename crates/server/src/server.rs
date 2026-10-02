@@ -4,8 +4,7 @@ use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
-use axum_server::accept::DefaultAcceptor;
-use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
+use axum_server::tls_rustls::RustlsConfig;
 use hyper_util::rt::{TokioExecutor, TokioTimer};
 use hyper_util::server::conn::auto::Builder;
 
@@ -13,7 +12,6 @@ use crate::api;
 use crate::auth::ServerKey;
 use crate::auth::keys::key_path;
 use crate::config::Config;
-use crate::conn_deadline::FirstByteDeadline;
 use crate::db::Db;
 use crate::error::{Result, ServerError};
 use crate::state::AppState;
@@ -22,9 +20,9 @@ use crate::util::unix_now;
 /// Grace period for in-flight requests on shutdown.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
-/// Longest a connection may take to send request headers: its first byte,
-/// each request's headers, and the wait for the next request on an idle
-/// keep-alive connection.
+/// Longest a connection may take to send request headers. hyper starts the
+/// timer when a connection opens and again whenever a keep-alive connection
+/// goes idle, so it also closes silent and idle connections.
 const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Opens the store and loads the server key, returning shared state ready to
@@ -58,41 +56,46 @@ pub async fn serve(
     let service = app.into_make_service_with_connect_info::<SocketAddr>();
 
     if state.config.tls_enabled() {
-        let tls = RustlsConfig::from_pem_file(
-            state.config.security.tls_cert.trim(),
-            state.config.security.tls_key.trim(),
-        )
-        .await
-        .map_err(|error| ServerError::Config(format!("cannot load TLS material: {error}")))?;
-        // Matches the HTTP/1.1-only server: never offer h2 in ALPN.
-        let mut rustls = (*tls.get_inner()).clone();
-        rustls.alpn_protocols = vec![b"http/1.1".to_vec()];
-        tls.reload_from_config(std::sync::Arc::new(rustls));
-
+        let tls = load_tls(&state.config).await?;
         tracing::info!(%addr, "listening with direct TLS");
-        let acceptor = FirstByteDeadline::new(RustlsAcceptor::new(tls), HEADER_READ_TIMEOUT);
-        let mut server = axum_server::bind(addr).acceptor(acceptor).handle(handle);
-        set_timeouts(server.http_builder());
+        let mut server = axum_server::bind_rustls(addr, tls)
+            .handle(handle)
+            .http1_only();
+        set_header_timeout(server.http_builder());
         server.serve(service).await?;
     } else {
         tracing::info!(%addr, "listening on plain HTTP (terminate TLS at the proxy)");
-        let acceptor = FirstByteDeadline::new(DefaultAcceptor, HEADER_READ_TIMEOUT);
-        let mut server = axum_server::bind(addr).acceptor(acceptor).handle(handle);
-        set_timeouts(server.http_builder());
+        let mut server = axum_server::bind(addr).handle(handle).http1_only();
+        set_header_timeout(server.http_builder());
         server.serve(service).await?;
     }
     Ok(())
 }
 
-/// Serves HTTP/1.1 only, with a header timeout.
+/// Loads the TLS certificate and key, offering only HTTP/1.1 in ALPN.
 ///
-/// Without a timer hyper enforces no header timeout at all, so a client
-/// could hold a connection by never finishing its headers. HTTP/2 is left
-/// out because detecting it means reading the connection's first bytes with
-/// no timeout; the proxy and the clients all speak HTTP/1.1.
-fn set_timeouts(builder: &mut Builder<TokioExecutor>) {
-    let auto = std::mem::replace(builder, Builder::new(TokioExecutor::new()));
-    *builder = auto.http1_only();
+/// axum-server's PEM loaders (including its reload helpers) always offer
+/// h2, so any future certificate reload must go through this function.
+async fn load_tls(config: &Config) -> Result<RustlsConfig> {
+    let tls = RustlsConfig::from_pem_file(
+        config.security.tls_cert.trim(),
+        config.security.tls_key.trim(),
+    )
+    .await
+    .map_err(|error| ServerError::Config(format!("cannot load TLS material: {error}")))?;
+    let mut rustls = (*tls.get_inner()).clone();
+    rustls.alpn_protocols = vec![b"http/1.1".to_vec()];
+    tls.reload_from_config(std::sync::Arc::new(rustls));
+    Ok(tls)
+}
+
+/// Enables hyper's header timeout. Without a timer hyper enforces none, so a
+/// client could hold a connection by never finishing its headers.
+///
+/// The server is HTTP/1.1 only: detecting HTTP/2 means reading a
+/// connection's first bytes with no timeout, and HTTP/2 connections have no
+/// header timeout at all. The proxy and the clients all speak HTTP/1.1.
+fn set_header_timeout(builder: &mut Builder<TokioExecutor>) {
     builder
         .http1()
         .timer(TokioTimer::new())

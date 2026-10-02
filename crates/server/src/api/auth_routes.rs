@@ -17,7 +17,7 @@ use crate::auth::pairing;
 use crate::auth::paseto::{issue_access_token, token_fingerprint, verify_refresh_proof};
 use crate::db::devices::parse_device_public_key;
 use crate::db::models::Device;
-use crate::security::client_key;
+use crate::security::{Claim, client_key};
 use crate::state::AppState;
 use crate::util::unix_now;
 
@@ -131,21 +131,22 @@ pub async fn pair(
     let ip_text = ip.to_string();
     let window = Duration::from_secs(60);
     // Every attempt is charged to the global budget before it runs and
-    // refunded only once it succeeds, so concurrent guesses cannot all slip
-    // past a budget that still looks open.
-    if !state
-        .rate
-        .check(GLOBAL_PAIR_FAILURE_KEY, GLOBAL_PAIR_FAILURE_LIMIT, window)
-    {
+    // refunded if it succeeds or never runs, so concurrent guesses cannot all
+    // slip past a budget that still looks open.
+    let Some(charged) =
+        state
+            .rate
+            .charge(GLOBAL_PAIR_FAILURE_KEY, GLOBAL_PAIR_FAILURE_LIMIT, window)
+    else {
         audit::rate_limited(&ip_text, "pair-global");
         return Err(ApiError::too_many_requests());
-    }
+    };
     if !state.rate.check(
         &format!("pair:{}", client_key(ip)),
         state.pairing_attempt_limit(),
         window,
     ) {
-        state.rate.refund(GLOBAL_PAIR_FAILURE_KEY);
+        state.rate.refund(GLOBAL_PAIR_FAILURE_KEY, charged);
         audit::rate_limited(&ip_text, "pair");
         return Err(ApiError::too_many_requests());
     }
@@ -169,7 +170,7 @@ pub async fn pair(
 
     match outcome {
         Ok(outcome) => {
-            state.rate.refund(GLOBAL_PAIR_FAILURE_KEY);
+            state.rate.refund(GLOBAL_PAIR_FAILURE_KEY, charged);
             audit::device_paired(&ip_text, &outcome.device.id, &outcome.device.name);
             Ok(Json(PairResponse {
                 device_id: outcome.device.id,
@@ -206,12 +207,19 @@ pub async fn refresh(
             return Err(error.into());
         }
     };
-    if !state
+    match state
         .proofs
         .claim(&device.id, &proof.proof_id, proof.expires_at, unix_now())
     {
-        audit::auth_failed(&ip_text, "replayed refresh proof");
-        return Err(ApiError::unauthorized("refresh proof already used"));
+        Claim::Accepted => {}
+        Claim::Replayed => {
+            audit::auth_failed(&ip_text, "replayed refresh proof");
+            return Err(ApiError::unauthorized("refresh proof already used"));
+        }
+        Claim::Full => {
+            audit::rate_limited(&ip_text, "refresh");
+            return Err(ApiError::too_many_requests());
+        }
     }
 
     let issued = issue_access_token(&state.keys, &device.id, state.token_ttl())?;

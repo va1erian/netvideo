@@ -8,4 +8,4 @@ pub mod replay;
 pub use path_jail::{LibraryRoot, LibraryRoots};
 pub use proxy::client_ip;
 pub use rate_limit::{RateLimiter, client_key};
-pub use replay::ProofLog;
+pub use replay::{Claim, ProofLog};
