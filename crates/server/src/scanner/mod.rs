@@ -19,7 +19,7 @@ use crate::db::Db;
 use crate::db::library::{KnownVideo, RootUpdate, VideoUpsert};
 use crate::db::models::ProbeInfo;
 use crate::error::{Result, ServerError};
-use walk::{FoundVideo, walk_root};
+use walk::{FoundVideo, RootWalk, walk_root};
 
 pub use coordinator::ScanCoordinator;
 
@@ -56,7 +56,11 @@ impl Scanner {
 
     /// Runs one full scan.
     pub async fn scan(&self, db: &Db) -> Result<ScanStats> {
-        let ffprobe_available = Arc::new(AtomicBool::new(true));
+        let healthy = probe::healthy(&self.ffprobe).await;
+        if !healthy {
+            tracing::warn!(program = %self.ffprobe.display(), "ffprobe does not run; indexing without metadata");
+        }
+        let ffprobe_available = Arc::new(AtomicBool::new(healthy));
         let mut stats = ScanStats::default();
         for (index, root) in self.roots.iter().enumerate() {
             // One failing root must not stop the others from being scanned.
@@ -96,20 +100,21 @@ impl Scanner {
             move || db.known_videos(root_index)
         })
         .await?;
-        // An unmounted share or a missing bind mount looks like an empty
-        // directory; pruning would wipe the root and lose every id.
-        let looks_unmounted = walk.dirs.is_empty() && walk.videos.is_empty() && !known.is_empty();
-        if looks_unmounted {
-            tracing::warn!(root = %root.display(), "library root is empty; keeping its rows");
+        let shielded = shielded_videos(&walk, &known);
+        if !shielded.is_empty() {
+            tracing::warn!(
+                root = %root.display(),
+                videos = shielded.len(),
+                "folders that held videos are now empty (unmounted?); keeping their rows"
+            );
         }
-        let partial = walk.partial || looks_unmounted;
-        stats.partial |= partial;
+        stats.partial |= walk.partial || !shielded.is_empty();
         let pending: Vec<&FoundVideo> = walk
             .videos
             .iter()
             .filter(|video| needs_write(video, known.get(&video.rel_path)))
             .collect();
-        let probes = self
+        let (probes, transient) = self
             .probe_all(root, &pending, &known, ffprobe_available)
             .await;
 
@@ -117,11 +122,14 @@ impl Scanner {
         for video in pending {
             let metadata = probes.get(&video.rel_path).cloned();
             let known_video = known.get(&video.rel_path);
-            let probe_failed = metadata.is_none() && ffprobe_available.load(Ordering::Relaxed);
+            let probe_failed = metadata.is_none()
+                && ffprobe_available.load(Ordering::Relaxed)
+                && !transient.contains(&video.rel_path);
             if probe_failed {
                 stats.probe_failures += 1;
             } else if metadata.is_none() && known_video.is_some_and(|k| is_unchanged(video, k)) {
-                // ffprobe is missing and the file is unchanged: nothing new.
+                // No verdict (ffprobe missing or a transient error) and the
+                // file is unchanged: nothing new to store.
                 continue;
             }
             upserts.push(VideoUpsert {
@@ -141,9 +149,10 @@ impl Scanner {
                 .videos
                 .into_iter()
                 .map(|video| video.rel_path)
+                .chain(shielded)
                 .collect(),
             upserts,
-            prune: !partial,
+            prune: !walk.partial,
         };
         let changes = blocking({
             let db = db.clone();
@@ -156,13 +165,15 @@ impl Scanner {
     }
 
     /// Probes the pending videos that need metadata, a few at a time.
+    /// Returns the metadata found, and the files that hit a transient error
+    /// and must not be marked as failed.
     async fn probe_all(
         &self,
         root: &Path,
         pending: &[&FoundVideo],
         known: &HashMap<String, KnownVideo>,
         ffprobe_available: &Arc<AtomicBool>,
-    ) -> HashMap<String, ProbeInfo> {
+    ) -> (HashMap<String, ProbeInfo>, HashSet<String>) {
         let semaphore = Arc::new(Semaphore::new(PROBE_CONCURRENCY));
         let mut tasks = JoinSet::new();
         let mut queued = HashSet::new();
@@ -183,7 +194,11 @@ impl Scanner {
                     return None;
                 }
                 match probe::probe(&program, &path).await {
-                    Ok(info) => Some((rel, info)),
+                    Ok(info) => Some((rel, Some(info))),
+                    Err(probe::ProbeError::Transient(error)) => {
+                        tracing::warn!(file = %rel, %error, "probe deferred to the next scan");
+                        Some((rel, None))
+                    }
                     Err(probe::ProbeError::Unavailable(error)) => {
                         if available.swap(false, Ordering::Relaxed) {
                             tracing::warn!(%error, "ffprobe unavailable; indexing without metadata");
@@ -197,17 +212,66 @@ impl Scanner {
                 }
             });
         }
-        let mut results = HashMap::new();
+        let (mut results, mut transient) = (HashMap::new(), HashSet::new());
         while let Some(joined) = tasks.join_next().await {
-            if let Ok(Some((rel, info))) = joined {
-                results.insert(rel, info);
+            match joined {
+                Ok(Some((rel, Some(info)))) => {
+                    results.insert(rel, info);
+                }
+                Ok(Some((rel, None))) => {
+                    transient.insert(rel);
+                }
+                _ => {}
             }
         }
-        results
+        (results, transient)
     }
 }
 
 /// Whether a found video needs its row written or its metadata read.
+/// Known videos the walk did not see, under a folder that still exists but
+/// is now empty. An unmounted share or a missing bind mount looks exactly
+/// like that, at the root or deeper, and pruning would delete every row and
+/// id beneath it.
+fn shielded_videos(walk: &RootWalk, known: &HashMap<String, KnownVideo>) -> Vec<String> {
+    let seen: HashSet<&str> = walk.videos.iter().map(|v| v.rel_path.as_str()).collect();
+    // A folder is empty when no walked entry lives beneath it.
+    let mut occupied: HashSet<&str> = HashSet::new();
+    let entries = walk
+        .dirs
+        .iter()
+        .map(|d| d.rel_path.as_str())
+        .chain(seen.iter().copied());
+    for entry in entries {
+        occupied.extend(ancestors(entry));
+    }
+    let empty: HashSet<&str> = walk
+        .dirs
+        .iter()
+        .map(|d| d.rel_path.as_str())
+        .chain(std::iter::once(""))
+        .filter(|dir| !occupied.contains(dir))
+        .collect();
+    known
+        .keys()
+        .filter(|rel| !seen.contains(rel.as_str()))
+        .filter(|rel| ancestors(rel).any(|dir| empty.contains(dir)))
+        .cloned()
+        .collect()
+}
+
+/// Proper ancestors of a relative path, nearest first, ending with `""`
+/// (the root). The root itself has none.
+pub(crate) fn ancestors(rel: &str) -> impl Iterator<Item = &str> {
+    let mut rest = Some(rel);
+    std::iter::from_fn(move || {
+        let path = rest.filter(|path| !path.is_empty())?;
+        let parent = path.rsplit_once('/').map_or("", |(parent, _)| parent);
+        rest = Some(parent);
+        Some(parent)
+    })
+}
+
 /// New or changed files need a write; unchanged ones only when they were
 /// never probed. A file ffprobe already failed on waits until it changes.
 fn needs_write(video: &FoundVideo, known: Option<&KnownVideo>) -> bool {
@@ -232,4 +296,16 @@ async fn blocking<T: Send + 'static>(
     tokio::task::spawn_blocking(work)
         .await
         .map_err(|error| ServerError::Io(std::io::Error::other(error)))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ancestors_walk_up_to_the_root() {
+        assert_eq!(ancestors("a/b/c.mkv").collect::<Vec<_>>(), ["a/b", "a", ""]);
+        assert_eq!(ancestors("c.mkv").collect::<Vec<_>>(), [""]);
+        assert_eq!(ancestors("").count(), 0);
+    }
 }

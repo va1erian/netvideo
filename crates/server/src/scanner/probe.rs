@@ -37,6 +37,10 @@ pub enum ProbeError {
     /// ffprobe ran but failed, timed out or printed something unusable.
     #[error("ffprobe failed: {0}")]
     Failed(String),
+    /// ffprobe could not start for a passing reason (EMFILE, EAGAIN); the
+    /// file is retried on the next scan.
+    #[error("ffprobe could not start: {0}")]
+    Transient(String),
 }
 
 /// The ffprobe argument vector for `path` (an absolute path).
@@ -60,6 +64,14 @@ pub fn probe_args(path: &Path) -> Vec<std::ffi::OsString> {
     .map(std::ffi::OsString::from)
     .chain(std::iter::once(input))
     .collect()
+}
+
+/// Whether `program` runs at all. A broken install (say, a missing shared
+/// library) fails every probe, which must not mark every file as unreadable.
+pub async fn healthy(program: &Path) -> bool {
+    let mut command = tokio::process::Command::new(program);
+    command.arg("-version");
+    run_capped(command, Duration::from_secs(10)).await.is_ok()
 }
 
 /// Probes `path` with the ffprobe executable at `program`.
@@ -88,7 +100,7 @@ pub(crate) async fn run_capped(
             std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied => {
                 ProbeError::Unavailable(error)
             }
-            _ => ProbeError::Failed(error.to_string()),
+            _ => ProbeError::Transient(error.to_string()),
         })?;
     let stdout = child
         .stdout

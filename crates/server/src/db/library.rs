@@ -8,6 +8,7 @@ use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use crate::db::Db;
 use crate::db::models::ProbeInfo;
 use crate::error::Result;
+use crate::scanner::ancestors;
 
 /// A video row as the scanner needs it to decide whether to re-probe.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -252,11 +253,13 @@ fn prune(tx: &Transaction<'_>, update: &RootUpdate, dirs: &[&str]) -> Result<u64
             removed += 1;
         }
     }
+    // Every ancestor of a kept video stays, including folders the walk did
+    // not see (rows shielded under an unmounted share).
     let keep: HashSet<&str> = dirs
         .iter()
         .copied()
         .chain(std::iter::once(""))
-        .chain(update.seen_videos.iter().map(|rel| parent_of(rel)))
+        .chain(update.seen_videos.iter().flat_map(|rel| ancestors(rel)))
         .collect();
     for (rel, id) in folder_ids(tx, update.root_index)? {
         if !keep.contains(rel.as_str()) {

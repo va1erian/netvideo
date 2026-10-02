@@ -30,9 +30,9 @@ async fn an_empty_root_keeps_its_rows() {
 
 #[tokio::test]
 async fn files_ffprobe_fails_on_are_not_retried_until_they_change() {
-    // `false` starts fine and exits non-zero: a probe failure, not a missing
-    // ffprobe.
-    let harness = Harness::with_ffprobe(Path::new("false"));
+    // `true` passes the health check, then prints nothing for a file: a
+    // probe failure, not a missing ffprobe.
+    let harness = Harness::with_ffprobe(Path::new("true"));
     write(&harness, "broken.mkv", b"broken");
     let first = scan(&harness).await;
     assert_eq!((first.written, first.probe_failures), (1, 1));
@@ -42,6 +42,44 @@ async fn files_ffprobe_fails_on_are_not_retried_until_they_change() {
     write(&harness, "broken.mkv", b"broken, but longer");
     let third = scan(&harness).await;
     assert_eq!((third.written, third.probe_failures), (1, 1));
+}
+
+#[tokio::test]
+async fn a_broken_ffprobe_marks_nothing_as_failed() {
+    // `false` cannot even print its version, like an install missing a
+    // shared library: files are indexed unprobed and retried later.
+    let harness = Harness::with_ffprobe(Path::new("false"));
+    write(&harness, "movie.mkv", b"movie");
+    let stats = scan(&harness).await;
+    assert_eq!((stats.written, stats.probe_failures), (1, 0));
+}
+
+#[tokio::test]
+async fn an_unmounted_subfolder_keeps_its_rows() {
+    let harness = unprobed();
+    write(&harness, "Films/Action/heat.mkv", b"heat");
+    write(&harness, "Shows/e01.mkv", b"e01");
+    scan(&harness).await;
+    let viewer = harness.pair_viewer().await;
+
+    // `Films` is a mount point whose share went away: the folder is there,
+    // but empty. `Shows` still has content, so the root is not empty.
+    std::fs::remove_dir_all(harness.library.join("Films/Action")).unwrap();
+    let stats = scan(&harness).await;
+    assert_eq!(stats.removed, 0);
+    assert!(stats.partial);
+    let root = root_id(&harness, &viewer.token).await;
+    let (_, page) = get(&harness, &format!("/api/v1/folders/{root}"), &viewer.token).await;
+    let films = page["folders"][0]["id"].as_str().unwrap();
+    let (_, films_page) = get(&harness, &format!("/api/v1/folders/{films}"), &viewer.token).await;
+    assert_eq!(
+        films_page["folders"][0]["name"], "Action",
+        "intermediate folder kept"
+    );
+
+    // A folder deleted outright is pruned as usual.
+    std::fs::remove_dir_all(harness.library.join("Shows")).unwrap();
+    assert_eq!(scan(&harness).await.removed, 1);
 }
 
 /// A scanned 10-byte video and the URI and ETag of its file.

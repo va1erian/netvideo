@@ -64,10 +64,16 @@ impl Db {
                 None => dropped += 1,
             }
         }
-        // Folders cascade to their videos; rows of roots never recorded (a
-        // database from before this table) are dropped too.
-        tx.execute("DELETE FROM videos WHERE root_index < 0", [])?;
+        // Rows left parked belong to removed roots, or to no recorded root
+        // at all; the latter should never happen, so it is logged loudly.
+        let orphans = tx.execute("DELETE FROM videos WHERE root_index < 0", [])?;
         tx.execute("DELETE FROM folders WHERE root_index < 0", [])?;
+        if dropped == 0 && orphans > 0 {
+            tracing::warn!(
+                orphans,
+                "deleted library rows that belonged to no recorded root"
+            );
+        }
         tx.execute("DELETE FROM library_roots", [])?;
         for (index, path) in wanted.iter().enumerate() {
             tx.execute(
