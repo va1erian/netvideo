@@ -51,24 +51,28 @@ impl Db {
     /// Brings the schema up to [`schema::CURRENT_VERSION`].
     pub fn migrate(&self) -> Result<()> {
         let mut conn = self.conn()?;
-        let mut version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        // A negative value indicates local tampering; treat it as empty.
-        version = version.max(0);
-        if version > schema::CURRENT_VERSION {
-            return Err(crate::error::ServerError::Conflict(format!(
-                "database schema version {version} is newer than this binary supports ({})",
-                schema::CURRENT_VERSION
-            )));
-        }
-        while version < schema::CURRENT_VERSION {
-            let statements = schema::MIGRATIONS[version as usize];
-            // IMMEDIATE serializes concurrent migrators (e.g. a CLI run while
-            // the server boots) instead of racing to create the same table.
+        loop {
+            // IMMEDIATE takes the write lock before the version is read, so a
+            // concurrent migrator (e.g. a CLI run while the server boots) is
+            // observed instead of racing to create the same tables.
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            tx.execute_batch(statements)?;
+            // A negative value indicates local tampering; treat it as empty.
+            let version = tx
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))?
+                .max(0);
+            if version > schema::CURRENT_VERSION {
+                return Err(crate::error::ServerError::Conflict(format!(
+                    "database schema version {version} is newer than this binary supports ({})",
+                    schema::CURRENT_VERSION
+                )));
+            }
+            if version == schema::CURRENT_VERSION {
+                tx.commit()?;
+                break;
+            }
+            tx.execute_batch(schema::MIGRATIONS[version as usize])?;
             tx.pragma_update(None, "user_version", version + 1)?;
             tx.commit()?;
-            version += 1;
         }
         conn.execute(
             "INSERT OR IGNORE INTO meta(key, value) VALUES (?1, ?2)",
@@ -91,4 +95,24 @@ fn configure_connection(conn: &mut rusqlite::Connection) -> rusqlite::Result<()>
          PRAGMA busy_timeout = 5000;
          PRAGMA temp_store = MEMORY;",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn concurrent_openers_migrate_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("race.db");
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || Db::open_at(&path).map(|_| ()))
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap().expect("every opener succeeds");
+        }
+    }
 }

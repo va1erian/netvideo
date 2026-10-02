@@ -17,11 +17,20 @@ use crate::auth::pairing;
 use crate::auth::paseto::{issue_access_token, token_fingerprint, verify_refresh_proof};
 use crate::db::devices::parse_device_public_key;
 use crate::db::models::Device;
+use crate::security::client_key;
 use crate::state::AppState;
 use crate::util::unix_now;
 
 /// Pairing-code minting attempts allowed per minute, per client IP.
 const PAIRING_CODE_ATTEMPT_LIMIT: u32 = 10;
+
+/// Failed pairing attempts allowed per minute across all clients. Bounds a
+/// distributed guesser: over a code's 600 s lifetime that is at most 300 of
+/// the 1,000,000 possible codes.
+const GLOBAL_PAIR_FAILURE_LIMIT: u32 = 30;
+
+/// Rate-limiter key for the global failed-pairing budget.
+const GLOBAL_PAIR_FAILURE_KEY: &str = "pair-failures:global";
 
 /// Pairing request body.
 #[derive(Deserialize)]
@@ -118,10 +127,18 @@ pub async fn pair(
     Json(request): Json<PairRequest>,
 ) -> Result<Json<PairResponse>, ApiError> {
     let ip_text = ip.to_string();
+    let window = Duration::from_secs(60);
+    if !state
+        .rate
+        .has_capacity(GLOBAL_PAIR_FAILURE_KEY, GLOBAL_PAIR_FAILURE_LIMIT, window)
+    {
+        audit::rate_limited(&ip_text, "pair-global");
+        return Err(ApiError::too_many_requests());
+    }
     if !state.rate.check(
-        &format!("pair:{ip_text}"),
+        &format!("pair:{}", client_key(ip)),
         state.pairing_attempt_limit(),
-        Duration::from_secs(60),
+        window,
     ) {
         audit::rate_limited(&ip_text, "pair");
         return Err(ApiError::too_many_requests());
@@ -156,6 +173,9 @@ pub async fn pair(
         }
         Err(error) => {
             audit::pair_failed(&ip_text);
+            state
+                .rate
+                .check(GLOBAL_PAIR_FAILURE_KEY, GLOBAL_PAIR_FAILURE_LIMIT, window);
             Err(error.into())
         }
     }
@@ -213,7 +233,7 @@ pub async fn create_pairing_code(
     let grants_admin = request.is_some_and(|Json(request)| request.admin);
     let ip_text = ip.to_string();
     if !state.rate.check(
-        &format!("paircode:{ip_text}"),
+        &format!("paircode:{}", client_key(ip)),
         PAIRING_CODE_ATTEMPT_LIMIT,
         Duration::from_secs(60),
     ) {

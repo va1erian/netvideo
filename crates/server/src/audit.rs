@@ -31,7 +31,12 @@ pub fn init(data_dir: &Path) -> std::io::Result<WorkerGuard> {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,netvideo_server=debug"));
 
-    let console = tracing_subscriber::fmt::layer().with_target(true).compact();
+    // `RUST_LOG` only tunes the console: a global filter would also drop
+    // audit events when an operator quiets the console.
+    let console = tracing_subscriber::fmt::layer()
+        .with_target(true)
+        .compact()
+        .with_filter(filter);
     let audit = tracing_subscriber::fmt::layer()
         .json()
         .with_writer(audit_writer)
@@ -40,7 +45,6 @@ pub fn init(data_dir: &Path) -> std::io::Result<WorkerGuard> {
         .with_filter(EnvFilter::new(format!("{AUDIT_TARGET}=info")));
 
     tracing_subscriber::registry()
-        .with(filter)
         .with(console)
         .with(audit)
         .init();

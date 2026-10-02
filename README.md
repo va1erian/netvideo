@@ -14,8 +14,9 @@ See [docs/PLAN.md](docs/PLAN.md) for the design and milestones and
 ## Running the server
 
 ```bash
-NETVIDEO_LIBRARY_PATHS=/path/to/videos NETVIDEO_DATA_DIR=./data \
-  cargo run -p netvideo-server -- serve
+export NETVIDEO_LIBRARY_PATHS=/path/to/videos
+export NETVIDEO_DATA_DIR=./data
+cargo run -p netvideo-server -- serve
 cargo run -p netvideo-server -- pair      # one-time code for an admin device
 cargo run -p netvideo-server -- devices   # list paired devices
 ```

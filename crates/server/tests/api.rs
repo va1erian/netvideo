@@ -32,6 +32,10 @@ struct Paired {
 
 impl Harness {
     fn new() -> Self {
+        Self::with_security(SecurityConfig::default())
+    }
+
+    fn with_security(security: SecurityConfig) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("library");
         std::fs::create_dir_all(&root).unwrap();
@@ -42,7 +46,7 @@ impl Harness {
                 data_dir: dir.path().join("data"),
                 trusted_proxies: vec![],
             },
-            security: SecurityConfig::default(),
+            security,
             library: LibraryConfig {
                 paths: vec![root],
                 scan_interval_secs: 0,
@@ -433,4 +437,35 @@ async fn oversized_bodies_are_rejected() {
     let request = json_request("POST", "/api/v1/auth/pair", &body);
     let (status, _, _) = harness.request(request).await;
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn failed_pairings_share_a_global_budget() {
+    let harness = Harness::with_security(SecurityConfig {
+        max_pairing_attempts_per_min: 1000,
+        ..SecurityConfig::default()
+    });
+    let real = harness.code(true);
+    let wrong = if real == "111111" { "222222" } else { "111111" };
+    let (_, public) = generate_device_keypair().unwrap();
+    let public = public_key_paserk(&public).unwrap();
+    let attempt = |code: &str| {
+        json_request(
+            "POST",
+            "/api/v1/auth/pair",
+            &serde_json::json!({
+                "pairing_code": code, "device_name": "guesser", "public_key": public,
+            }),
+        )
+    };
+    for _ in 0..30 {
+        let (status, _, _) = harness.request(attempt(wrong)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let (status, _, _) = harness.request(attempt(&real)).await;
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "once the failure budget is spent, even a right guess is refused"
+    );
 }

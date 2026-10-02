@@ -43,7 +43,8 @@ pub struct Config {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields, default)]
 pub struct ServerConfig {
-    /// Interface to bind. Use `0.0.0.0` only behind a trusted reverse proxy.
+    /// IP address to bind (an IP literal such as `0.0.0.0` or `::`, not a
+    /// hostname). Use `0.0.0.0` only behind a trusted reverse proxy.
     pub host: String,
     /// TCP port to bind on the internal network.
     pub port: u16,
@@ -197,8 +198,11 @@ impl Config {
         if self.server.port == 0 {
             return Err(ServerError::Config("server.port must not be 0".into()));
         }
-        if self.server.host.trim().is_empty() {
-            return Err(ServerError::Config("server.host must not be empty".into()));
+        if self.server.host.trim().parse::<IpAddr>().is_err() {
+            return Err(ServerError::Config(format!(
+                "server.host must be an IP address (e.g. 0.0.0.0 or ::), got {:?}",
+                self.server.host
+            )));
         }
         if self.server.data_dir.as_os_str().is_empty() {
             return Err(ServerError::Config(

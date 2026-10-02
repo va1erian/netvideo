@@ -79,18 +79,13 @@ pub async fn run(config: Config) -> Result<()> {
     serve(state, shutdown_signal()).await
 }
 
-/// Resolves the configured host/port into a socket address.
+/// Resolves the configured host/port into a socket address. `server.host`
+/// must be an IP literal (validated by [`Config::validate`]).
 pub fn listen_addr(config: &Config) -> Result<SocketAddr> {
     let host = config.server.host.trim();
-    let port = config.server.port;
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        return Ok(SocketAddr::new(ip, port));
-    }
-    format!("{host}:{port}").parse().map_err(|error| {
-        ServerError::Config(format!(
-            "cannot parse listen address {host}:{port}: {error}"
-        ))
-    })
+    host.parse::<IpAddr>()
+        .map(|ip| SocketAddr::new(ip, config.server.port))
+        .map_err(|_| ServerError::Config(format!("server.host {host:?} is not an IP address")))
 }
 
 /// Resolves on Ctrl-C (all platforms) or SIGTERM (Unix).

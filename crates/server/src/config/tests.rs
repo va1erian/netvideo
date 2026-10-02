@@ -157,3 +157,12 @@ fn invalid_trusted_proxy_is_rejected() {
     config.server.trusted_proxies = vec!["not-an-ip".into()];
     assert!(config.validate().is_err());
 }
+
+#[test]
+fn hostnames_are_rejected_as_listen_hosts() {
+    let mut config = Config::from_toml(MINIMAL).expect("parse");
+    config.server.host = "localhost".into();
+    assert!(config.validate().is_err());
+    config.server.host = "::".into();
+    config.validate().expect("IPv6 literal is valid");
+}

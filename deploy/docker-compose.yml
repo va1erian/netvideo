@@ -11,8 +11,10 @@ services:
     build: { context: .., dockerfile: deploy/Dockerfile }
     container_name: netvideo-server
     restart: unless-stopped
-    ports:
-      - "8080:8080"
+    # Cosmos reaches the container over the Docker network. Do not publish
+    # 8080 on the host: that would expose plain HTTP beside the TLS proxy.
+    expose:
+      - "8080"
     environment:
       - RUST_LOG=info,netvideo_server=debug
       - NETVIDEO_LIBRARY_PATHS=/media/videos
