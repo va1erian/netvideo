@@ -99,7 +99,7 @@ impl Db {
         let conn = self.conn()?;
         let detail = conn
             .query_row(
-                "SELECT id, name, folder_id, size, mtime, probed, container, duration_ms, bitrate
+                "SELECT id, name, folder_id, size, mtime_ns, probed, container, duration_ms, bitrate
                  FROM videos WHERE id = ?1",
                 [id],
                 |row| {
@@ -112,7 +112,7 @@ impl Db {
                         name,
                         folder_id: row.get(2)?,
                         size: row.get(3)?,
-                        mtime: row.get(4)?,
+                        mtime_ns: row.get(4)?,
                         probed: row.get::<_, i64>(5)? != 0,
                         container: row.get(6)?,
                         duration_ms: row.get(7)?,
@@ -160,14 +160,14 @@ impl Db {
         let conn = self.conn()?;
         Ok(conn
             .query_row(
-                "SELECT root_index, rel_path, size, mtime FROM videos WHERE id = ?1",
+                "SELECT root_index, rel_path, size, mtime_ns FROM videos WHERE id = ?1",
                 [id],
                 |row| {
                     Ok(VideoLocation {
                         root_index: row.get(0)?,
                         rel_path: row.get(1)?,
                         size: row.get(2)?,
-                        mtime: row.get(3)?,
+                        mtime_ns: row.get(3)?,
                     })
                 },
             )

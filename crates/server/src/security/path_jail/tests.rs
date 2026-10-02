@@ -105,3 +105,42 @@ fn rejects_symlink_escaping_the_root() {
     std::fs::remove_dir_all(&root).ok();
     std::fs::remove_dir_all(&outside).ok();
 }
+
+#[test]
+fn open_returns_a_handle_to_the_file_under_the_root() {
+    use std::io::Read;
+    let root = temp_dir("open");
+    std::fs::write(root.join("movie.mkv"), b"bytes").unwrap();
+    let roots = LibraryRoots::new(std::slice::from_ref(&root));
+    let mut contents = String::new();
+    roots
+        .open(0, "movie.mkv")
+        .expect("open")
+        .read_to_string(&mut contents)
+        .unwrap();
+    assert_eq!(contents, "bytes");
+}
+
+#[cfg(unix)]
+#[test]
+fn open_refuses_a_symlink_out_of_the_root() {
+    let root = temp_dir("open-escape");
+    let outside = temp_dir("open-outside");
+    std::fs::write(outside.join("secret.mkv"), b"secret").unwrap();
+    std::os::unix::fs::symlink(&outside, root.join("dir")).unwrap();
+    let roots = LibraryRoots::new(std::slice::from_ref(&root));
+    let error = roots.open(0, "dir/secret.mkv").unwrap_err();
+    assert!(matches!(error, ServerError::PathEscape { .. }));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn opened_path_reports_the_real_location() {
+    let root = temp_dir("opened-path");
+    std::fs::write(root.join("a.mkv"), b"a").unwrap();
+    let canonical = std::fs::canonicalize(root.join("a.mkv")).unwrap();
+    let file = std::fs::File::open(&canonical).unwrap();
+    // A stale `resolved` argument is ignored: the kernel's view wins.
+    let opened = opened_path(&file, Path::new("/elsewhere")).unwrap();
+    assert_eq!(opened, canonical);
+}

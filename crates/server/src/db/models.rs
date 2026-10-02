@@ -151,8 +151,8 @@ pub struct VideoDetail {
     pub folder_id: String,
     /// File size in bytes.
     pub size: i64,
-    /// Modification time (Unix seconds).
-    pub mtime: i64,
+    /// Modification time (nanoseconds since the Unix epoch).
+    pub mtime_ns: i64,
     /// MIME type served by the direct-play endpoint.
     pub mime: String,
     /// Whether ffprobe metadata is available.
@@ -176,6 +176,6 @@ pub struct VideoLocation {
     pub rel_path: String,
     /// File size in bytes at the last scan.
     pub size: i64,
-    /// Modification time (Unix seconds) at the last scan.
-    pub mtime: i64,
+    /// Modification time (nanoseconds since the Unix epoch) at the last scan.
+    pub mtime_ns: i64,
 }

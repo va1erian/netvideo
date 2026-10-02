@@ -55,7 +55,7 @@ pub const MIGRATIONS: &[&str] = &[
         rel_path    TEXT NOT NULL,
         name        TEXT NOT NULL,
         size        INTEGER NOT NULL,
-        mtime       INTEGER NOT NULL,
+        mtime_ns    INTEGER NOT NULL,
         probed      INTEGER NOT NULL DEFAULT 0,
         container   TEXT,
         duration_ms INTEGER,

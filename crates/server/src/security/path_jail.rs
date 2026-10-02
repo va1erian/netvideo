@@ -50,13 +50,7 @@ impl LibraryRoots {
     /// Resolves `relative_path` under the root at `root_index`, returning a
     /// canonical absolute path proven to be a regular file under that root.
     pub fn resolve(&self, root_index: i64, relative_path: &str) -> Result<PathBuf> {
-        let root = self
-            .roots
-            .get(usize::try_from(root_index).map_err(|_| {
-                ServerError::PathRejected(format!("negative root index {root_index}"))
-            })?)
-            .ok_or_else(|| ServerError::PathRejected(format!("unknown root index {root_index}")))?;
-
+        let root = self.root(root_index)?;
         let relative = self.validate_relative(relative_path)?;
 
         let canonical_root = std::fs::canonicalize(root.path()).map_err(|error| {
@@ -78,6 +72,44 @@ impl LibraryRoots {
             ));
         }
         Ok(canonical)
+    }
+
+    /// Opens `relative_path` under the root at `root_index` for reading.
+    ///
+    /// [`resolve`](Self::resolve) proves the path lives under the root, but a
+    /// writer could swap a directory for a symlink before the open. So the
+    /// opened handle's real location is checked again, and callers must read
+    /// through the returned handle, never by reopening the path.
+    pub fn open(&self, root_index: i64, relative_path: &str) -> Result<std::fs::File> {
+        let resolved = self.resolve(root_index, relative_path)?;
+        let file = std::fs::File::open(&resolved)
+            .map_err(|error| ServerError::PathRejected(format!("file is unavailable: {error}")))?;
+        let opened = opened_path(&file, &resolved)?;
+        let canonical_root =
+            std::fs::canonicalize(self.root(root_index)?.path()).map_err(|error| {
+                ServerError::PathRejected(format!("library root is unavailable: {error}"))
+            })?;
+        if !opened.starts_with(&canonical_root) {
+            return Err(ServerError::PathEscape {
+                path: opened,
+                root: canonical_root,
+            });
+        }
+        let is_file = file.metadata().is_ok_and(|metadata| metadata.is_file());
+        if !is_file {
+            return Err(ServerError::PathRejected(
+                "opened path is not a regular file".into(),
+            ));
+        }
+        Ok(file)
+    }
+
+    fn root(&self, root_index: i64) -> Result<&LibraryRoot> {
+        let index = usize::try_from(root_index)
+            .map_err(|_| ServerError::PathRejected(format!("negative root index {root_index}")))?;
+        self.roots
+            .get(index)
+            .ok_or_else(|| ServerError::PathRejected(format!("unknown root index {root_index}")))
     }
 
     /// Rejects absolute paths, drive/UNC prefixes and any `..` component.
@@ -111,6 +143,24 @@ impl LibraryRoots {
         }
         Ok(path)
     }
+}
+
+/// Where an open file actually lives, as the kernel sees it.
+#[cfg(target_os = "linux")]
+fn opened_path(file: &std::fs::File, _resolved: &Path) -> Result<PathBuf> {
+    use std::os::fd::AsRawFd;
+    std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).map_err(|error| {
+        ServerError::PathRejected(format!("cannot verify the opened file: {error}"))
+    })
+}
+
+/// Off Linux (development hosts only) there is no `/proc`; re-resolving the
+/// path after the open narrows, but does not close, the race.
+#[cfg(not(target_os = "linux"))]
+fn opened_path(_file: &std::fs::File, resolved: &Path) -> Result<PathBuf> {
+    std::fs::canonicalize(resolved).map_err(|error| {
+        ServerError::PathRejected(format!("cannot verify the opened file: {error}"))
+    })
 }
 
 #[cfg(test)]

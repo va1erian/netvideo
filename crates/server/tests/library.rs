@@ -389,10 +389,23 @@ async fn a_triggered_scan_holds_the_lock_until_it_runs() {
     assert!(raced.is_none(), "the triggered scan owns the lock");
 }
 
+/// Sets `rel`'s mtime to a whole second plus `millis`, so tests can make two
+/// changes that fall within the same Unix second.
+fn set_mtime(harness: &Harness, rel: &str, millis: u64) {
+    let time = std::time::UNIX_EPOCH + std::time::Duration::from_millis(1_700_000_000_000 + millis);
+    std::fs::File::options()
+        .write(true)
+        .open(harness.library.join(rel))
+        .unwrap()
+        .set_modified(time)
+        .unwrap();
+}
+
 #[tokio::test]
 async fn etags_follow_the_file_not_the_last_scan() {
     let harness = unprobed();
     write(&harness, "movie.mkv", b"version-1");
+    set_mtime(&harness, "movie.mkv", 100);
     scan(&harness).await;
     let viewer = harness.pair_viewer().await;
     let id = video_id(&harness, &viewer.token, "movie.mkv").await;
@@ -402,20 +415,30 @@ async fn etags_follow_the_file_not_the_last_scan() {
         .await;
     let old_etag = headers[header::ETAG].clone();
 
-    // Same size, new content and mtime, and no rescan.
-    let path = harness.library.join("movie.mkv");
-    std::fs::write(&path, b"version-2").unwrap();
-    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(120);
-    std::fs::File::options()
-        .write(true)
-        .open(&path)
-        .unwrap()
-        .set_modified(later)
-        .unwrap();
+    // Same size, new content, an mtime in the same second, and no rescan.
+    write(&harness, "movie.mkv", b"version-2");
+    set_mtime(&harness, "movie.mkv", 400);
 
     let mut cached = harness.authed("GET", &uri, &viewer.token);
     cached.headers_mut().insert(header::IF_NONE_MATCH, old_etag);
     let (status, _, body) = harness.request(cached).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(&body[..], b"version-2");
+}
+
+#[tokio::test]
+async fn rescans_catch_same_size_replacements_within_a_second() {
+    let harness = unprobed();
+    write(&harness, "movie.mkv", b"version-1");
+    set_mtime(&harness, "movie.mkv", 100);
+    assert_eq!(scan(&harness).await.written, 1);
+    assert_eq!(
+        scan(&harness).await.written,
+        0,
+        "unchanged files are skipped"
+    );
+
+    write(&harness, "movie.mkv", b"version-2");
+    set_mtime(&harness, "movie.mkv", 400);
+    assert_eq!(scan(&harness).await.written, 1);
 }

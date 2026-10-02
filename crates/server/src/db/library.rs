@@ -15,7 +15,7 @@ pub struct KnownVideo {
     /// File size at the last scan.
     pub size: i64,
     /// Modification time at the last scan.
-    pub mtime: i64,
+    pub mtime_ns: i64,
     /// Whether ffprobe metadata is stored.
     pub probed: bool,
 }
@@ -28,7 +28,7 @@ pub struct VideoUpsert {
     /// File size in bytes.
     pub size: i64,
     /// Modification time (Unix seconds).
-    pub mtime: i64,
+    pub mtime_ns: i64,
     /// Probe result; `None` stores the video without metadata.
     pub metadata: Option<ProbeInfo>,
 }
@@ -63,14 +63,14 @@ impl Db {
     /// Known videos of a root, keyed by relative path.
     pub fn known_videos(&self, root_index: i64) -> Result<HashMap<String, KnownVideo>> {
         let conn = self.conn()?;
-        let mut stmt =
-            conn.prepare("SELECT rel_path, size, mtime, probed FROM videos WHERE root_index = ?1")?;
+        let mut stmt = conn
+            .prepare("SELECT rel_path, size, mtime_ns, probed FROM videos WHERE root_index = ?1")?;
         let rows = stmt.query_map([root_index], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 KnownVideo {
                     size: row.get(1)?,
-                    mtime: row.get(2)?,
+                    mtime_ns: row.get(2)?,
                     probed: row.get::<_, i64>(3)? != 0,
                 },
             ))
@@ -168,13 +168,13 @@ fn upsert_video(
     let id = match existing {
         Some(id) => {
             tx.execute(
-                "UPDATE videos SET folder_id = ?2, size = ?3, mtime = ?4, probed = ?5,
+                "UPDATE videos SET folder_id = ?2, size = ?3, mtime_ns = ?4, probed = ?5,
                  container = ?6, duration_ms = ?7, bitrate = ?8 WHERE id = ?1",
                 params![
                     id,
                     folder_id,
                     video.size,
-                    video.mtime,
+                    video.mtime_ns,
                     probed,
                     container,
                     duration,
@@ -187,7 +187,7 @@ fn upsert_video(
         None => {
             let id = new_id();
             tx.execute(
-                "INSERT INTO videos (id, folder_id, root_index, rel_path, name, size, mtime,
+                "INSERT INTO videos (id, folder_id, root_index, rel_path, name, size, mtime_ns,
                  probed, container, duration_ms, bitrate)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
@@ -197,7 +197,7 @@ fn upsert_video(
                     video.rel_path,
                     file_name(&video.rel_path),
                     video.size,
-                    video.mtime,
+                    video.mtime_ns,
                     probed,
                     container,
                     duration,

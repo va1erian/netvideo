@@ -1,9 +1,8 @@
 //! Direct play: the original file, served with HTTP Range support.
 //!
 //! A client only ever names a video id. The stored relative path is resolved
-//! through the path jail before a single byte is read.
-
-use std::path::Path as FsPath;
+//! through the path jail, and bytes are read only through the handle the jail
+//! opened and verified.
 
 use axum::body::Body;
 use axum::extract::{Path, State};
@@ -18,7 +17,7 @@ use crate::audit;
 use crate::auth::middleware::{AuthDevice, ClientIp};
 use crate::error::ServerError;
 use crate::scanner::formats::video_mime;
-use crate::scanner::walk::unix_mtime;
+use crate::scanner::walk::unix_mtime_ns;
 use crate::state::AppState;
 
 /// `GET /api/v1/videos/{id}/file`
@@ -38,36 +37,37 @@ pub async fn file(
 
     let roots = state.roots.clone();
     let (root_index, rel_path) = (location.root_index, location.rel_path.clone());
-    let resolved = tokio::task::spawn_blocking(move || roots.resolve(root_index, &rel_path))
-        .await
-        .map_err(|_| ApiError::internal())?;
-    let path = match resolved {
-        Ok(path) => path,
+    let opened = tokio::task::spawn_blocking(move || {
+        let file = roots.open(root_index, &rel_path)?;
+        let metadata = file.metadata()?;
+        Ok::<_, ServerError>((file, metadata))
+    })
+    .await
+    .map_err(|_| ApiError::internal())?;
+    let (file, metadata) = match opened {
+        Ok(opened) => opened,
         // Only a genuine escape is a security event; a missing or stale file
         // is ordinary and must not pollute the audit log.
         Err(error @ ServerError::PathEscape { .. }) => {
             audit::path_violation(&ip.to_string(), &device.id, &id);
             return Err(error.into());
         }
-        Err(error) => return Err(error.into()),
+        Err(_) => return Err(ApiError::not_found()),
     };
 
-    let metadata = match tokio::fs::metadata(&path).await {
-        Ok(metadata) if metadata.is_file() => metadata,
-        _ => return Err(ApiError::not_found()),
-    };
     let len = metadata.len();
     let mime = video_mime(&location.rel_path).unwrap_or("application/octet-stream");
-    // Live size and mtime, so a file replaced since the last scan never
-    // matches a stale ETag.
-    let mtime = unix_mtime(&metadata).unwrap_or(location.mtime);
-    let etag = format!("\"{len:x}-{mtime:x}\"");
-    serve_with_range(&path, &headers, len, mime, &etag).await
+    // Live size and nanosecond mtime, so a file replaced since the last scan
+    // never matches a stale ETag.
+    let mtime_ns = unix_mtime_ns(&metadata).unwrap_or(location.mtime_ns);
+    let etag = format!("\"{len:x}-{mtime_ns:x}\"");
+    let file = tokio::fs::File::from_std(file);
+    serve_with_range(file, &headers, len, mime, &etag).await
 }
 
-/// Serves `path` honouring `Range` and `If-None-Match`.
+/// Serves `file` honouring `Range` and `If-None-Match`.
 async fn serve_with_range(
-    path: &FsPath,
+    file: tokio::fs::File,
     headers: &HeaderMap,
     len: u64,
     mime: &str,
@@ -85,9 +85,9 @@ async fn serve_with_range(
         .get(header::RANGE)
         .map(|value| value.to_str().unwrap_or_default());
     match requested {
-        None => serve(path, 0, len.saturating_sub(1), len, mime, etag, false).await,
+        None => serve(file, 0, len.saturating_sub(1), len, mime, etag, false).await,
         Some(raw) => match parse_range(raw, len) {
-            Ok((start, end)) => serve(path, start, end, len, mime, etag, true).await,
+            Ok((start, end)) => serve(file, start, end, len, mime, etag, true).await,
             Err(RangeError::Unsatisfiable) => Ok(unsatisfiable(len)),
             Err(RangeError::Invalid) => Err(ApiError::bad_request("invalid range")),
         },
@@ -95,7 +95,7 @@ async fn serve_with_range(
 }
 
 async fn serve(
-    path: &FsPath,
+    mut file: tokio::fs::File,
     start: u64,
     end: u64,
     len: u64,
@@ -107,9 +107,6 @@ async fn serve(
     let body = if length == 0 {
         Body::empty()
     } else {
-        let mut file = tokio::fs::File::open(path)
-            .await
-            .map_err(|_| ApiError::not_found())?;
         file.seek(SeekFrom::Start(start))
             .await
             .map_err(|_| ApiError::internal())?;

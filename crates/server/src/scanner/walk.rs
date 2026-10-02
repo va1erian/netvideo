@@ -28,7 +28,7 @@ pub struct FoundVideo {
     /// File size in bytes.
     pub size: u64,
     /// Modification time as Unix seconds.
-    pub mtime: i64,
+    pub mtime_ns: i64,
 }
 
 /// Result of walking a single root.
@@ -89,7 +89,7 @@ pub fn walk_root(root: &Path) -> RootWalk {
             outcome.videos.push(FoundVideo {
                 rel_path,
                 size: metadata.len(),
-                mtime: unix_mtime(&metadata).unwrap_or(0),
+                mtime_ns: unix_mtime_ns(&metadata).unwrap_or(0),
             });
         }
     }
@@ -109,10 +109,12 @@ fn relative_slash_path(root: &Path, path: &Path) -> Option<String> {
     Some(parts.join("/"))
 }
 
-/// A file's modification time in Unix seconds, when the platform reports one.
-pub fn unix_mtime(metadata: &std::fs::Metadata) -> Option<i64> {
+/// A file's modification time in nanoseconds since the Unix epoch, when the
+/// platform reports one. Sub-second precision catches same-size replacements
+/// made within one second.
+pub fn unix_mtime_ns(metadata: &std::fs::Metadata) -> Option<i64> {
     let since_epoch = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
-    i64::try_from(since_epoch.as_secs()).ok()
+    i64::try_from(since_epoch.as_nanos()).ok()
 }
 
 #[cfg(test)]

@@ -121,7 +121,7 @@ impl Scanner {
             upserts.push(VideoUpsert {
                 rel_path: video.rel_path.clone(),
                 size: video.size as i64,
-                mtime: video.mtime,
+                mtime_ns: video.mtime_ns,
                 metadata,
             });
         }
@@ -206,7 +206,7 @@ fn needs_write(video: &FoundVideo, known: Option<&KnownVideo>) -> bool {
 }
 
 fn is_unchanged(video: &FoundVideo, known: &KnownVideo) -> bool {
-    known.size == video.size as i64 && known.mtime == video.mtime
+    known.size == video.size as i64 && known.mtime_ns == video.mtime_ns
 }
 
 fn root_name(root: &Path) -> String {
